@@ -30,3 +30,14 @@ Thumbs.db
 
 # Streamlit
 .streamlit/
+
+# Backend / Chroma
+backend/chroma_db/
+backend/*.db
+backend/fts5_index.db
+
+# Nuxt / Frontend
+frontend/.nuxt/
+frontend/node_modules/
+frontend/dist/
+frontend/.output/

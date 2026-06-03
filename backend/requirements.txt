@@ -1,0 +1,25 @@
+# Core
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.0.0
+
+# LangChain / LangGraph
+langchain>=0.3
+langchain-openai
+langgraph>=0.3
+langgraph-checkpoint-sqlite
+
+# Vector Store
+chromadb>=0.6.0
+
+# Database
+sqlalchemy>=2.0
+aiosqlite>=0.20
+
+# Elasticsearch (optional, fallback to SQLite FTS5)
+# elasticsearch>=8.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+msgpack>=1.0.0
+uuid-utils>=0.12.0
