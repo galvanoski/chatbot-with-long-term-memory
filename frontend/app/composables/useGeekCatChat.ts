@@ -1,22 +1,28 @@
 import type { Thread, ThreadListItem, ThreadState, SendMessageResponse } from '#shared/types/thread'
 
+export function transformMessages(msgs: Thread['messages']): any[] {
+  return (msgs ?? []).filter(Boolean).map(m => ({
+    ...m,
+    name: m.role === 'assistant' ? 'The Geek Cat' : 'Du',
+    parts: [{ type: 'text' as const, text: m.content || '' }]
+  }))
+}
+
 export function useGeekCatChat() {
   const threads = ref<ThreadListItem[]>([])
   const currentThread = ref<Thread | null>(null)
+  const messages = ref<any[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
   const polling = ref(false)
 
-  const messages = computed(() =>
-    (currentThread.value?.messages ?? []).map(m => ({
-      ...m,
-      name: m.role === 'assistant' ? 'The Geek Cat' : 'Du',
-      parts: [{ type: 'text' as const, text: m.content || '' }]
-    }))
-  )
-
   const isAwaitingApproval = computed(() => currentThread.value?.status === 'awaiting_approval')
   const pendingCopy = computed(() => currentThread.value?.pending_copy)
+
+  function setFromThread(t: Thread) {
+    currentThread.value = t
+    messages.value = transformMessages(t.messages)
+  }
 
   async function fetchThreads() {
     try {
@@ -31,7 +37,7 @@ export function useGeekCatChat() {
     error.value = null
     try {
       const thread = await $fetch<Thread>('/api/threads', { method: 'POST' })
-      currentThread.value = thread
+      setFromThread(thread)
       threads.value.unshift({
         id: thread.id,
         title: thread.title,
@@ -53,7 +59,7 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      currentThread.value = await $fetch<Thread>(`/api/threads/${id}`)
+      setFromThread(await $fetch<Thread>(`/api/threads/${id}`))
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to load thread'
     } finally {
@@ -76,6 +82,7 @@ export function useGeekCatChat() {
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status
       currentThread.value.pending_copy = res.pending_copy
+      messages.value = transformMessages(res.messages)
       return true
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to send message'
@@ -97,6 +104,7 @@ export function useGeekCatChat() {
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status as Thread['status']
       currentThread.value.pending_copy = undefined
+      messages.value = transformMessages(res.messages)
       return true
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to approve'
@@ -121,6 +129,7 @@ export function useGeekCatChat() {
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status as Thread['status']
       currentThread.value.pending_copy = undefined
+      messages.value = transformMessages(res.messages)
       return true
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to reject'

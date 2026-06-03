@@ -1,9 +1,11 @@
 <script setup lang="ts">
 const route = useRoute()
 const chatId = route.params.id as string
+const initialPrompt = computed(() => typeof route.query.prompt === 'string' ? route.query.prompt : '')
 
 const feedbackInput = ref('')
 const showFeedback = ref(false)
+const initialPromptSent = ref(false)
 
 const chat = useGeekCatChat()
 
@@ -13,8 +15,22 @@ async function send() {
   if (!input.value.trim() || unref(chat.loading)) return
   const text = input.value
   input.value = ''
-  await chat.sendMessage(text)
+  return chat.sendMessage(text)
 }
+
+async function handleSendClick() {
+  await send()
+}
+
+onMounted(async () => {
+  if (!initialPrompt.value || initialPromptSent.value) return
+  if (currentThread.value?.messages?.length) return
+
+  initialPromptSent.value = true
+  input.value = initialPrompt.value
+  await send()
+  await navigateTo(`/chat/${chatId}`, { replace: true })
+})
 
 async function handleApprove() {
   await chat.approveCopy()
@@ -34,20 +50,51 @@ const input = ref('')
 const isLoading = computed(() => unref(chat.loading))
 const isAwaiting = computed(() => unref(chat.isAwaitingApproval))
 const pending = computed(() => unref(chat.pendingCopy))
+const currentThread = computed(() => unref(chat.currentThread))
+const threadMessages = computed(() => unref(chat.messages))
+const chatError = computed(() => unref(chat.error))
+const showDebugPanel = import.meta.dev
+const debugState = computed(() => JSON.stringify({
+  chatId,
+  loading: isLoading.value,
+  error: chatError.value,
+  hasThread: Boolean(currentThread.value),
+  initialPromptQueued: Boolean(initialPrompt.value),
+  threadStatus: currentThread.value?.status ?? null,
+  storedMessageCount: currentThread.value?.messages?.length ?? 0,
+  renderedMessageCount: threadMessages.value.length,
+  awaitingApproval: isAwaiting.value
+}, null, 2))
 </script>
 
 <template>
   <div class="flex-1 flex flex-col h-full min-h-0">
-    <template v-if="chat.currentThread">
+    <div
+      v-if="showDebugPanel"
+      data-testid="chat-debug"
+      class="border-b border-default bg-muted/30 px-4 py-3"
+    >
+      <div class="mx-auto max-w-2xl">
+        <p class="text-xs font-semibold uppercase tracking-wide text-muted">
+          Chat Debug
+        </p>
+        <pre class="mt-2 overflow-x-auto text-xs text-toned">{{ debugState }}</pre>
+      </div>
+    </div>
+
+    <template v-if="currentThread">
       <UChatMessages
+        :key="chatId"
+        data-testid="chat-messages"
         class="flex-1 overflow-y-auto px-4 py-4"
-        :messages="(chat.messages as any)"
+        :messages="(threadMessages as any)"
         :assistant="{ avatar: { src: '/favicon.ico' } }"
       />
 
       <!-- HITL: Approval Panel -->
       <div
         v-if="isAwaiting && pending"
+        data-testid="approval-panel"
         class="border-t border-default p-4 bg-elevated"
       >
         <div class="max-w-2xl mx-auto space-y-3">
@@ -59,7 +106,7 @@ const pending = computed(() => unref(chat.pendingCopy))
           </div>
 
           <UCard variant="subtle">
-            <div class="whitespace-pre-wrap text-sm">
+            <div data-testid="pending-copy-content" class="whitespace-pre-wrap text-sm">
               {{ pending.content }}
             </div>
             <div v-if="pending.hashtags?.length" class="flex flex-wrap gap-1 mt-2">
@@ -119,6 +166,7 @@ const pending = computed(() => unref(chat.pendingCopy))
         <div class="max-w-2xl mx-auto">
           <UChatPrompt
             v-model="input"
+            data-testid="chat-prompt"
             :status="isLoading ? 'streaming' : 'ready'"
             placeholder="Nachricht eingeben..."
             variant="subtle"
@@ -126,7 +174,7 @@ const pending = computed(() => unref(chat.pendingCopy))
             @submit="send"
           >
             <template #footer>
-              <UChatPromptSubmit color="neutral" size="sm" />
+              <UChatPromptSubmit data-testid="chat-submit" :on-click="handleSendClick" color="neutral" size="sm" />
             </template>
           </UChatPrompt>
         </div>
@@ -135,12 +183,12 @@ const pending = computed(() => unref(chat.pendingCopy))
 
     <template v-else-if="isLoading">
       <div class="flex-1 flex items-center justify-center">
-        <ULog />
+        <UIcon name="i-lucide-loader-circle" class="size-8 text-muted animate-spin" />
       </div>
     </template>
 
     <template v-else>
-      <div class="flex-1 flex items-center justify-center text-muted">
+      <div data-testid="chat-empty-state" class="flex-1 flex items-center justify-center text-muted">
         <p>Thread nicht gefunden.</p>
       </div>
     </template>

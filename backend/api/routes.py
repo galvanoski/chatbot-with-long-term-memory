@@ -1,6 +1,9 @@
 import datetime as dt
 import logging
+import sqlite3
+import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -27,6 +30,118 @@ _memory: MemoryManager | None = None
 
 # In-memory thread store (keyed by thread_id)
 _threads: dict[str, dict] = {}
+_thread_db_path = Path(__file__).resolve().parents[2] / "threads.db"
+_thread_db_conn: sqlite3.Connection | None = None
+_thread_db_lock = threading.Lock()
+
+
+def _set_thread_db_path(path: Path) -> None:
+    global _thread_db_path, _thread_db_conn
+    with _thread_db_lock:
+        if _thread_db_conn is not None:
+            _thread_db_conn.close()
+            _thread_db_conn = None
+        _thread_db_path = path
+
+
+def _get_thread_db_conn() -> sqlite3.Connection:
+    global _thread_db_conn
+    with _thread_db_lock:
+        if _thread_db_conn is None:
+            _thread_db_path.parent.mkdir(parents=True, exist_ok=True)
+            _thread_db_conn = sqlite3.connect(_thread_db_path, check_same_thread=False)
+            _thread_db_conn.row_factory = sqlite3.Row
+            _thread_db_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_threads (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            _thread_db_conn.commit()
+        return _thread_db_conn
+
+
+def _save_thread_record(thread: dict) -> None:
+    conn = _get_thread_db_conn()
+    conn.execute(
+        """
+        INSERT INTO chat_threads (id, user_id, title, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            user_id=excluded.user_id,
+            title=excluded.title,
+            status=excluded.status,
+            created_at=excluded.created_at,
+            updated_at=excluded.updated_at
+        """,
+        (
+            thread["id"],
+            thread["user_id"],
+            thread.get("title"),
+            thread.get("status", "active"),
+            thread["created_at"],
+            thread["updated_at"],
+        ),
+    )
+    conn.commit()
+
+
+def _load_thread_record(thread_id: str, user_id: str | None = None) -> dict | None:
+    conn = _get_thread_db_conn()
+    if user_id:
+        row = conn.execute(
+            "SELECT id, user_id, title, status, created_at, updated_at FROM chat_threads WHERE id = ? AND user_id = ?",
+            (thread_id, user_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id, user_id, title, status, created_at, updated_at FROM chat_threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "title": row["title"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "messages": [],
+    }
+
+
+def _list_thread_records(user_id: str) -> list[dict]:
+    conn = _get_thread_db_conn()
+    rows = conn.execute(
+        """
+        SELECT id, user_id, title, status, created_at, updated_at
+        FROM chat_threads
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "title": row["title"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "messages": [],
+        }
+        for row in rows
+    ]
 
 
 def _extract_messages(state_values: dict) -> list[dict]:
@@ -42,6 +157,50 @@ def _extract_messages(state_values: dict) -> list[dict]:
             "created_at": dt.datetime.utcnow().isoformat(),
         })
     return msgs
+
+
+def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dict:
+    """Return a frontend-ready thread payload from stored thread and graph state."""
+    values = state_values or {}
+
+    draft_copy = values.get("draft_copy_de") or ""
+    approval_status = values.get("approval_status")
+    metadata = values.get("copy_metadata") or {}
+
+    status = thread.get("status", "active")
+    if approval_status == "approved":
+        status = "published"
+    elif draft_copy and approval_status != "approved":
+        status = "awaiting_approval"
+    elif values:
+        status = "active"
+
+    messages = thread.get("messages", [])
+    if values:
+        messages = _extract_messages(values)
+        if draft_copy and not any(m["role"] == "assistant" for m in messages):
+            messages.append({
+                "id": str(len(messages)),
+                "role": "assistant",
+                "content": draft_copy,
+                "created_at": dt.datetime.utcnow().isoformat(),
+            })
+
+    pending_copy = None
+    if status == "awaiting_approval" and draft_copy:
+        pending_copy = {
+            "content": draft_copy,
+            "hashtags": metadata.get("hashtags", []),
+            "product_name": metadata.get("product_name"),
+            "product_url": metadata.get("product_url"),
+        }
+
+    return {
+        **thread,
+        "status": status,
+        "messages": messages,
+        "pending_copy": pending_copy,
+    }
 
 router = APIRouter(prefix="/api")
 
@@ -62,6 +221,13 @@ def init_routes(
 @router.get("/chat/threads")
 def list_threads(user_id: str):
     """List all chat threads for a user."""
+    records = _list_thread_records(user_id)
+    for record in records:
+        cached = _threads.get(record["id"])
+        if cached:
+            record["messages"] = cached.get("messages", [])
+            record["status"] = cached.get("status", record["status"])
+            record["updated_at"] = cached.get("updated_at", record["updated_at"])
     return [
         {
             "id": t["id"],
@@ -71,8 +237,7 @@ def list_threads(user_id: str):
             "status": t["status"],
             "message_count": len(t["messages"]),
         }
-        for t in _threads.values()
-        if t["user_id"] == user_id
+        for t in records
     ]
 
 
@@ -91,6 +256,7 @@ def create_thread(body: ThreadCreateRequest):
         "messages": [],
     }
     _threads[thread_id] = thread
+    _save_thread_record(thread)
     logger.info("create_thread: user=%s thread=%s", body.user_id, thread_id)
     return thread
 
@@ -98,19 +264,28 @@ def create_thread(body: ThreadCreateRequest):
 @router.get("/chat/threads/{thread_id}")
 def get_thread(thread_id: str, user_id: str = ""):
     """Get a specific thread with its messages from graph state."""
-    thread = _threads.get(thread_id)
+    thread = _threads.get(thread_id) or _load_thread_record(thread_id, user_id or None)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
+    _threads[thread_id] = thread
     # Pull latest messages from graph state when available
     if _graph:
         try:
             config = {"configurable": {"thread_id": thread_id}}
             state = _graph.get_state(config)
             if state and state.values:
-                thread = {**thread, "messages": _extract_messages(state.values)}
+                payload = _build_thread_payload(thread, state.values)
+                if thread_id in _threads:
+                    _threads[thread_id].update({
+                        "status": payload["status"],
+                        "messages": payload["messages"],
+                        "updated_at": dt.datetime.utcnow().isoformat(),
+                    })
+                    _save_thread_record(_threads[thread_id])
+                return payload
         except Exception:
             pass
-    return thread
+    return _build_thread_payload(thread)
 
 
 @router.post("/chat/threads/{thread_id}/messages")
@@ -173,46 +348,30 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
     state_snapshot = _graph.get_state(config)
     snap_values = state_snapshot.values if state_snapshot else result
 
-    draft_copy = result.get("draft_copy_de") or snap_values.get("draft_copy_de", "")
-    approval_status = result.get("approval_status") or snap_values.get("approval_status")
-    metadata = result.get("copy_metadata") or snap_values.get("copy_metadata") or {}
-
-    # Determine status for frontend
-    if approval_status == "approved":
-        status = "published"
-    elif draft_copy and approval_status != "approved":
-        status = "awaiting_approval"
-    else:
-        status = "active"
-
-    # Build messages list: user message + assistant reply when draft exists
-    messages = _extract_messages(snap_values)
-    if draft_copy and not any(m["role"] == "assistant" for m in messages):
-        messages.append({
-            "id": str(len(messages)),
-            "role": "assistant",
-            "content": draft_copy,
-            "created_at": dt.datetime.utcnow().isoformat(),
-        })
-
-    # Build pending_copy when awaiting approval
-    pending_copy = None
-    if status == "awaiting_approval" and draft_copy:
-        pending_copy = {
-            "content": draft_copy,
-            "hashtags": metadata.get("hashtags", []),
-            "product_name": metadata.get("product_name"),
-            "product_url": metadata.get("product_url"),
-        }
+    existing_thread = _threads.get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+        "id": thread_id,
+        "user_id": body.user_id,
+        "title": None,
+        "created_at": dt.datetime.utcnow().isoformat(),
+        "updated_at": dt.datetime.utcnow().isoformat(),
+        "status": "active",
+        "messages": [],
+    }
+    _threads[thread_id] = existing_thread
+    payload = _build_thread_payload(existing_thread, snap_values)
 
     # Update in-memory thread store
     now = dt.datetime.utcnow().isoformat()
-    if thread_id in _threads:
-        _threads[thread_id]["messages"] = messages
-        _threads[thread_id]["status"] = status
-        _threads[thread_id]["updated_at"] = now
+    _threads[thread_id]["messages"] = payload["messages"]
+    _threads[thread_id]["status"] = payload["status"]
+    _threads[thread_id]["updated_at"] = now
+    _save_thread_record(_threads[thread_id])
 
-    return {"status": status, "messages": messages, "pending_copy": pending_copy}
+    return {
+        "status": payload["status"],
+        "messages": payload["messages"],
+        "pending_copy": payload["pending_copy"],
+    }
 
 
 @router.get("/chat/threads/{thread_id}/state")
@@ -255,13 +414,23 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
         raise HTTPException(status_code=500, detail=f"Resume failed: {str(exc)}")
 
     messages = _extract_messages(result)
+    thread = _threads.get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+        "id": thread_id,
+        "user_id": body.user_id,
+        "title": None,
+        "created_at": dt.datetime.utcnow().isoformat(),
+        "updated_at": dt.datetime.utcnow().isoformat(),
+        "status": "published",
+        "messages": [],
+    }
+    _threads[thread_id] = thread
 
     # Update thread store
     now = dt.datetime.utcnow().isoformat()
-    if thread_id in _threads:
-        _threads[thread_id]["status"] = "published"
-        _threads[thread_id]["messages"] = messages
-        _threads[thread_id]["updated_at"] = now
+    _threads[thread_id]["status"] = "published"
+    _threads[thread_id]["messages"] = messages
+    _threads[thread_id]["updated_at"] = now
+    _save_thread_record(_threads[thread_id])
 
     return {"status": "published", "messages": messages}
 
@@ -279,12 +448,22 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
     })
 
     logger.info("copy rejected: thread=%s feedback=%s", thread_id, body.feedback)
+    thread = _threads.get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+        "id": thread_id,
+        "user_id": body.user_id,
+        "title": None,
+        "created_at": dt.datetime.utcnow().isoformat(),
+        "updated_at": dt.datetime.utcnow().isoformat(),
+        "status": "active",
+        "messages": [],
+    }
+    _threads[thread_id] = thread
 
     # Update thread store
     now = dt.datetime.utcnow().isoformat()
-    if thread_id in _threads:
-        _threads[thread_id]["status"] = "active"
-        _threads[thread_id]["updated_at"] = now
+    _threads[thread_id]["status"] = "active"
+    _threads[thread_id]["updated_at"] = now
+    _save_thread_record(_threads[thread_id])
 
     return {"status": "rejected", "messages": _threads.get(thread_id, {}).get("messages", [])}
 

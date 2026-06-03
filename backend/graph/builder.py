@@ -1,6 +1,8 @@
 import logging
+import sqlite3
+from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
 from backend.graph.state import AgentState
@@ -10,6 +12,16 @@ from backend.graph.nodes.publisher import publisher_node
 from backend.graph.conditions import should_approve
 
 logger = logging.getLogger("geekcat.graph.builder")
+_checkpoint_conn: sqlite3.Connection | None = None
+
+
+def _get_checkpoint_saver() -> SqliteSaver:
+    global _checkpoint_conn
+    if _checkpoint_conn is None:
+        checkpoint_path = Path(__file__).resolve().parents[2] / "threads.db"
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        _checkpoint_conn = sqlite3.connect(checkpoint_path, check_same_thread=False)
+    return SqliteSaver(_checkpoint_conn)
 
 
 def build_marketing_graph(
@@ -54,7 +66,7 @@ def build_marketing_graph(
     builder.add_edge("publisher", END)
 
     # ── Compile with checkpointer + HITL interrupt ──
-    checkpointer = MemorySaver()
+    checkpointer = _get_checkpoint_saver()
     graph = builder.compile(
         checkpointer=checkpointer,
         interrupt_before=["publisher"],
