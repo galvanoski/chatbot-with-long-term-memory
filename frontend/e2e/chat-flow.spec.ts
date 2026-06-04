@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 test('creates a chat and renders returned messages', async ({ page }) => {
-  const threadId = 'thread-e2e-1'
+  const threadId = '11111111-1111-4111-8111-111111111111'
   const prompt = 'Necesito copy para camiseta Bitcoin'
   const responseMessages = [
     {

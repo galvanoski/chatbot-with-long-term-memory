@@ -1,10 +1,16 @@
+import { assertUuid, backendUnavailableError } from '../../utils/requestValidation'
+
 export default defineEventHandler(async (event) => {
   const { apiBaseUrl } = useRuntimeConfig().public
-  const threadId = getRouterParam(event, 'id')
+  const threadId = assertUuid(getRouterParam(event, 'id'), 'threadId')
 
-  const thread = await $fetch(`${apiBaseUrl}/api/chat/threads/${threadId}`, {
-    params: { user_id: getUserId(event) }
-  })
+  try {
+    const thread = await $fetch(`${apiBaseUrl}/api/chat/threads/${threadId}`, {
+      params: { user_id: getUserId(event) }
+    })
 
-  return thread
+    return thread
+  } catch {
+    throw backendUnavailableError()
+  }
 })
