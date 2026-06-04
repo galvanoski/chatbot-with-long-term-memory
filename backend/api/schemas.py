@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── Request schemas ──
@@ -90,3 +90,85 @@ class ProductCatalogBulkLoadRequest(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
     error_code: Optional[str] = None
+
+
+# ── Shared response schemas ──
+
+class ThreadMessageResponse(BaseModel):
+    id: str
+    role: str
+    content: str
+    created_at: str
+    pending_approval: bool = False
+
+
+class ThreadSourceResponse(BaseModel):
+    label: str
+    url: Optional[str] = None
+    type: Optional[str] = None
+
+
+class PendingCopyResponse(BaseModel):
+    content: str
+    hashtags: list[str] = Field(default_factory=list)
+    product_name: Optional[str] = None
+    product_url: Optional[str] = None
+    sources: list[ThreadSourceResponse] = Field(default_factory=list)
+    parts: Optional[dict[str, Any]] = None
+
+
+class ThreadListItemResponse(BaseModel):
+    id: str
+    title: Optional[str] = None
+    created_at: str
+    updated_at: str
+    status: str
+    message_count: int
+
+
+class ThreadDetailResponse(BaseModel):
+    id: str
+    user_id: Optional[str] = None
+    title: Optional[str] = None
+    created_at: str
+    updated_at: str
+    status: str
+    messages: list[ThreadMessageResponse] = Field(default_factory=list)
+    pending_copy: Optional[PendingCopyResponse] = None
+
+
+class ThreadStateResponse(BaseModel):
+    status: str
+    messages: list[ThreadMessageResponse] = Field(default_factory=list)
+    pending_copy: Optional[PendingCopyResponse] = None
+
+
+class ThreadActionResponse(BaseModel):
+    title: Optional[str] = None
+    status: str
+    messages: list[ThreadMessageResponse] = Field(default_factory=list)
+    pending_copy: Optional[PendingCopyResponse] = None
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class DeleteMemoryResponse(BaseModel):
+    status: str
+    doc_id: str
+
+
+class BrandRuleSaveResponse(BaseModel):
+    status: str
+    key: str
+
+
+class ProductCatalogBulkLoadResponse(BaseModel):
+    loaded: int
+
+
+class HealthResponse(BaseModel):
+    status: str
+    service: str
+    checks: dict[str, bool]

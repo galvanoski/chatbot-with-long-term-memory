@@ -20,7 +20,7 @@ def simulate_post(
     Returns a dict with publication status and metadata.
     """
     post_id = str(uuid.uuid4())
-    timestamp = datetime.datetime.utcnow().isoformat()
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     logger.info("simulate_post: platform=%s user=%s post_id=%s", platform, user_id, post_id)
 

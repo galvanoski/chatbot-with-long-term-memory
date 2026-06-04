@@ -1,0 +1,11 @@
+2026-06-04 14:47:11,634 [INFO] geekcat: Initialising The Geek Cat backend...
+2026-06-04 14:47:13,341 [INFO] geekcat.graph.builder: marketing graph built successfully
+2026-06-04 14:47:13,355 [INFO] geekcat: Backend initialised successfully
+INFO:     Started server process [28520]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-06-04 14:48:16,279 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_eab1e7fd-17a0-41f0-b38e-2bfb18d0fedc
+2026-06-04 14:48:17,145 [INFO] geekcat.api: migrated chat threads from anon_eab1e7fd-17a0-41f0-b38e-2bfb18d0fedc to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
+2026-06-04 14:49:58,705 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_c2b6ca32-0694-4be9-a50d-d7126cdbf2ab
+2026-06-04 14:49:59,576 [INFO] geekcat.api: migrated chat threads from anon_c2b6ca32-0694-4be9-a50d-d7126cdbf2ab to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c

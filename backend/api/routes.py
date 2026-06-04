@@ -14,13 +14,21 @@ from langgraph.graph.state import CompiledStateGraph
 
 from backend.api.schemas import (
     ApprovalRequest,
+    BrandRuleResponse,
     BrandRuleSaveRequest,
+    BrandRuleSaveResponse,
+    DeleteMemoryResponse,
     MemoryItem,
     MemoryListResponse,
     MessageSendRequest,
     ProductCatalogBulkLoadRequest,
+    ProductCatalogBulkLoadResponse,
     RegenerateRequest,
     ThreadCreateRequest,
+    ThreadDetailResponse,
+    ThreadListItemResponse,
+    ThreadStateResponse,
+    ThreadActionResponse,
 )
 from backend.graph.tools.rag import load_products_to_catalog
 from backend.memory.manager import MemoryManager
@@ -44,6 +52,9 @@ _ANON_USER_ID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+
+def _utc_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 def _set_thread_db_path(path: Path) -> None:
     global _thread_db_path, _thread_db_conn
@@ -236,7 +247,7 @@ def _extract_messages(state_values: dict) -> list[dict]:
             "id": str(i),
             "role": role,
             "content": content,
-            "created_at": dt.datetime.utcnow().isoformat(),
+            "created_at": _utc_now_iso(),
         })
     return msgs
 
@@ -368,14 +379,14 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
                 "id": str(len(messages)),
                 "role": "assistant",
                 "content": draft_copy,
-                "created_at": dt.datetime.utcnow().isoformat(),
+                "created_at": _utc_now_iso(),
             })
         elif draft_copy and not any(m["role"] == "assistant" for m in messages):
             messages.append({
                 "id": str(len(messages)),
                 "role": "assistant",
                 "content": draft_copy,
-                "created_at": dt.datetime.utcnow().isoformat(),
+                "created_at": _utc_now_iso(),
             })
 
     pending_copy = None
@@ -413,7 +424,7 @@ def init_routes(
 
 # ── Chat Threads ──
 
-@router.get("/chat/threads")
+@router.get("/chat/threads", response_model=list[ThreadListItemResponse])
 def list_threads(user_id: str):
     """List all chat threads for a user."""
     records = _list_thread_records(user_id)
@@ -441,7 +452,7 @@ def list_threads(user_id: str):
 
             if derived_messages:
                 record["title"] = _derive_thread_title_from_messages(derived_messages)
-                record["updated_at"] = dt.datetime.utcnow().isoformat()
+                record["updated_at"] = _utc_now_iso()
                 _save_thread_record(record)
 
         if not record.get("title"):
@@ -463,11 +474,11 @@ def list_threads(user_id: str):
     ]
 
 
-@router.post("/chat/threads")
+@router.post("/chat/threads", response_model=ThreadDetailResponse)
 def create_thread(body: ThreadCreateRequest):
     """Create a new chat thread for a user."""
     thread_id = str(uuid.uuid4())
-    now = dt.datetime.utcnow().isoformat()
+    now = _utc_now_iso()
     thread = {
         "id": thread_id,
         "user_id": body.user_id,
@@ -483,7 +494,7 @@ def create_thread(body: ThreadCreateRequest):
     return thread
 
 
-@router.get("/chat/threads/{thread_id}")
+@router.get("/chat/threads/{thread_id}", response_model=ThreadDetailResponse)
 def get_thread(thread_id: str, user_id: str = ""):
     """Get a specific thread with its messages from graph state."""
     thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, user_id or None)
@@ -505,13 +516,13 @@ def get_thread(thread_id: str, user_id: str = ""):
                         "title": payload_title,
                         "status": payload["status"],
                         "messages": payload["messages"],
-                        "updated_at": dt.datetime.utcnow().isoformat(),
+                        "updated_at": _utc_now_iso(),
                     })
                     _save_thread_record(cached_thread)
                 payload["title"] = payload_title
                 return payload
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("get_thread graph state failed for %s: %s", thread_id, exc)
     payload = _build_thread_payload(thread)
     payload_title = _derive_thread_title_from_messages(payload.get("messages", []))
     cached_thread = _thread_cache_update(thread_id, {"title": payload_title})
@@ -520,7 +531,7 @@ def get_thread(thread_id: str, user_id: str = ""):
     return payload
 
 
-@router.post("/chat/threads/{thread_id}/messages")
+@router.post("/chat/threads/{thread_id}/messages", response_model=ThreadActionResponse)
 def send_message(thread_id: str, body: MessageSendRequest):
     """Send a user message to the agent and execute the marketing pipeline."""
     if not _graph or not _middleware:
@@ -584,8 +595,8 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
         "id": thread_id,
         "user_id": body.user_id,
         "title": None,
-        "created_at": dt.datetime.utcnow().isoformat(),
-        "updated_at": dt.datetime.utcnow().isoformat(),
+        "created_at": _utc_now_iso(),
+        "updated_at": _utc_now_iso(),
         "status": "active",
         "messages": [],
     }
@@ -594,7 +605,7 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
     payload = _build_thread_payload(existing_thread, snap_values)
 
     # Update in-memory thread store
-    now = dt.datetime.utcnow().isoformat()
+    now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
         "messages": payload["messages"],
         "status": payload["status"],
@@ -611,8 +622,8 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
     }
 
 
-@router.get("/chat/threads/{thread_id}/state")
-def get_thread_state(thread_id: str):
+@router.get("/chat/threads/{thread_id}/state", response_model=ThreadStateResponse)
+def get_thread_state(thread_id: str, user_id: str = ""):
     """Get the current state of a thread (for polling HITL status)."""
     if not _graph:
         raise HTTPException(status_code=503, detail="Graph not initialised")
@@ -623,16 +634,28 @@ def get_thread_state(thread_id: str):
     except Exception:
         raise HTTPException(status_code=404, detail="Thread not found")
 
+    thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, user_id or None)
+    if not thread:
+        thread = {
+            "id": thread_id,
+            "user_id": user_id or "",
+            "title": None,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "status": "active",
+            "messages": [],
+        }
+
+    payload = _build_thread_payload(thread, state.values or {})
+
     return {
-        "thread_id": thread_id,
-        "approval_status": state.values.get("approval_status"),
-        "draft_copy_de": state.values.get("draft_copy_de"),
-        "next_nodes": list(state.next) if state.next else [],
-        "is_interrupted": "publisher" in (state.next or []),
+        "status": payload["status"],
+        "messages": payload["messages"],
+        "pending_copy": payload["pending_copy"],
     }
 
 
-@router.post("/chat/threads/{thread_id}/approve")
+@router.post("/chat/threads/{thread_id}/approve", response_model=ThreadActionResponse)
 def approve_copy(thread_id: str, body: ApprovalRequest):
     """Approve the generated copy and resume the graph to publisher node."""
     if not _graph:
@@ -677,8 +700,8 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
         "id": thread_id,
         "user_id": body.user_id,
         "title": None,
-        "created_at": dt.datetime.utcnow().isoformat(),
-        "updated_at": dt.datetime.utcnow().isoformat(),
+        "created_at": _utc_now_iso(),
+        "updated_at": _utc_now_iso(),
         "status": "published",
         "messages": [],
     }
@@ -687,7 +710,7 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
         messages = thread.get("messages", [])
 
     # Update thread store
-    now = dt.datetime.utcnow().isoformat()
+    now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
         "status": "published",
         "messages": messages,
@@ -707,7 +730,7 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
     return {"status": "published", "messages": messages}
 
 
-@router.post("/chat/threads/{thread_id}/reject")
+@router.post("/chat/threads/{thread_id}/reject", response_model=ThreadActionResponse)
 def reject_copy(thread_id: str, body: ApprovalRequest):
     """Reject the generated copy with optional feedback."""
     if not _graph:
@@ -761,8 +784,8 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
         "id": thread_id,
         "user_id": body.user_id,
         "title": None,
-        "created_at": dt.datetime.utcnow().isoformat(),
-        "updated_at": dt.datetime.utcnow().isoformat(),
+        "created_at": _utc_now_iso(),
+        "updated_at": _utc_now_iso(),
         "status": "active",
         "messages": [],
     }
@@ -771,7 +794,7 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
     payload = _build_thread_payload(thread, snap_values)
 
     # Update thread store
-    now = dt.datetime.utcnow().isoformat()
+    now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
         "status": payload["status"],
         "messages": payload["messages"],
@@ -795,7 +818,7 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
     }
 
 
-@router.post("/chat/threads/{thread_id}/regenerate")
+@router.post("/chat/threads/{thread_id}/regenerate", response_model=ThreadActionResponse)
 def regenerate_copy(thread_id: str, body: RegenerateRequest):
     """Regenerate copy from latest thread context with optional user instruction."""
     if not _graph:
@@ -848,15 +871,15 @@ def regenerate_copy(thread_id: str, body: RegenerateRequest):
         "id": thread_id,
         "user_id": body.user_id,
         "title": None,
-        "created_at": dt.datetime.utcnow().isoformat(),
-        "updated_at": dt.datetime.utcnow().isoformat(),
+        "created_at": _utc_now_iso(),
+        "updated_at": _utc_now_iso(),
         "status": "active",
         "messages": [],
     }
     thread = _thread_cache_set(thread)
     payload = _build_thread_payload(thread, snap_values)
 
-    now = dt.datetime.utcnow().isoformat()
+    now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
         "status": payload["status"],
         "messages": payload["messages"],
@@ -889,7 +912,7 @@ def list_memories(user_id: str):
     )
 
 
-@router.delete("/memory/{user_id}/{doc_id}")
+@router.delete("/memory/{user_id}/{doc_id}", response_model=DeleteMemoryResponse)
 def delete_memory(user_id: str, doc_id: str):
     """Delete a specific memory."""
     if not _memory:
@@ -898,7 +921,7 @@ def delete_memory(user_id: str, doc_id: str):
     return {"status": "deleted", "doc_id": doc_id}
 
 
-@router.get("/memory/{user_id}/brand-rules")
+@router.get("/memory/{user_id}/brand-rules", response_model=BrandRuleResponse)
 def get_brand_rules(user_id: str):
     """Get all brand style rules for a user."""
     if not _memory:
@@ -907,7 +930,7 @@ def get_brand_rules(user_id: str):
     return {"rules": rules}
 
 
-@router.post("/memory/{user_id}/brand-rules")
+@router.post("/memory/{user_id}/brand-rules", response_model=BrandRuleSaveResponse)
 def save_brand_rule(user_id: str, body: BrandRuleSaveRequest):
     """Save or update a brand style rule."""
     if not _memory:
@@ -918,7 +941,7 @@ def save_brand_rule(user_id: str, body: BrandRuleSaveRequest):
 
 # ── Product Catalog (RAG ingestion) ──
 
-@router.post("/catalog/products/bulk")
+@router.post("/catalog/products/bulk", response_model=ProductCatalogBulkLoadResponse)
 def bulk_load_product_catalog(body: ProductCatalogBulkLoadRequest):
     """Bulk load product documents into the global product catalog vector store."""
     if not body.items:

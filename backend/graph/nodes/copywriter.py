@@ -17,8 +17,8 @@ def _extract_json_payload(raw: str) -> dict | None:
 
     # Strip optional markdown code fences.
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\\s*", "", text)
-        text = re.sub(r"\\s*```$", "", text)
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
 
     try:
         payload = json.loads(text)

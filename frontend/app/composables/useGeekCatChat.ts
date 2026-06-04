@@ -1,4 +1,19 @@
 import type { Thread, ThreadListItem, ThreadState, SendMessageResponse, UIMessage } from '#shared/types/thread'
+import {
+  threadActionResponseSchema,
+  threadDetailSchema,
+  threadListResponseSchema,
+  threadStateSchema,
+} from '../../shared/schemas/thread'
+
+function parseValidatedResponse<T>(schema: { parse: (value: unknown) => T }, value: unknown, label: string): T {
+  try {
+    return schema.parse(value)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown validation error'
+    throw new Error(`${label} validation failed: ${message}`)
+  }
+}
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -116,7 +131,7 @@ export function useGeekCatChat() {
 
   async function fetchThreads() {
     try {
-      threads.value = await $fetch<ThreadListItem[]>('/api/threads')
+      threads.value = parseValidatedResponse(threadListResponseSchema, await $fetch('/api/threads'), 'Thread list')
     } catch (errorValue: unknown) {
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to load threads'
     }
@@ -126,7 +141,7 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      const thread = await $fetch<Thread>('/api/threads', { method: 'POST' })
+      const thread = parseValidatedResponse(threadDetailSchema, await $fetch('/api/threads', { method: 'POST' }), 'Thread create')
       setFromThread(thread)
       return thread.id
     } catch (errorValue: unknown) {
@@ -141,7 +156,7 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      setFromThread(await $fetch<Thread>(`/api/threads/${id}`))
+      setFromThread(parseValidatedResponse(threadDetailSchema, await $fetch(`/api/threads/${id}`), 'Thread detail'))
     } catch (errorValue: unknown) {
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to load thread'
     } finally {
@@ -177,13 +192,13 @@ export function useGeekCatChat() {
     sending.value = true
     error.value = null
     try {
-      const res = await $fetch<SendMessageResponse>(
+      const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/messages`,
         {
           method: 'POST',
           body: { message: text }
         }
-      )
+      ), 'Send message response')
       currentThread.value.messages = res.messages
       if (res.title) {
         currentThread.value.title = res.title
@@ -220,7 +235,7 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      const res = await $fetch<{ status: string; messages: Thread['messages'] }>(
+      const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/approve`,
         {
           method: 'POST',
@@ -234,7 +249,7 @@ export function useGeekCatChat() {
                   ? { feedback }
                   : undefined
         }
-      )
+      ), 'Approve response')
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status as Thread['status']
       currentThread.value.pending_copy = undefined
@@ -255,18 +270,13 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      const res = await $fetch<{
-        status: string
-        messages: Thread['messages']
-        pending_copy?: Thread['pending_copy']
-        title?: string
-      }>(
+      const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/reject`,
         {
           method: 'POST',
           body: { feedback }
         }
-      )
+      ), 'Reject response')
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status as Thread['status']
       currentThread.value.pending_copy = res.pending_copy
@@ -290,18 +300,13 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      const res = await $fetch<{
-        status: string
-        messages: Thread['messages']
-        pending_copy?: Thread['pending_copy']
-        title?: string
-      }>(
+      const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/regenerate`,
         {
           method: 'POST',
           body: instruction ? { instruction } : undefined
         }
-      )
+      ), 'Regenerate response')
 
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status as Thread['status']
@@ -325,9 +330,9 @@ export function useGeekCatChat() {
     if (!currentThread.value) return null
     polling.value = true
     try {
-      return await $fetch<ThreadState>(
+      return parseValidatedResponse(threadStateSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/state`
-      )
+      ), 'Thread state')
     } catch {
       return null
     } finally {
