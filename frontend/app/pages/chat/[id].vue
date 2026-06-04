@@ -20,7 +20,7 @@ const chat = useGeekCatChat()
 await chat.loadThread(chatId)
 
 async function send() {
-  if (!input.value.trim() || unref(chat.loading) || unref(chat.sending) || isAwaiting.value) return
+  if (!input.value.trim() || unref(chat.loading) || unref(chat.sending)) return
   const text = input.value
   input.value = ''
   return chat.sendMessage(text)
@@ -391,7 +391,7 @@ const debugState = computed(() => JSON.stringify({
               :maxrows="6"
               placeholder="Ask anything"
               class="flex-1"
-              :disabled="isLoading || isSending || isAwaiting"
+              :disabled="isLoading || isSending"
               @keydown.enter.exact.prevent="send"
             />
             <UButton icon="i-lucide-mic" variant="ghost" color="neutral" class="rounded-full" />
@@ -401,7 +401,7 @@ const debugState = computed(() => JSON.stringify({
               color="neutral"
               class="rounded-full"
               :loading="isLoading || isSending"
-              :disabled="isLoading || isSending || isAwaiting || !input.trim()"
+              :disabled="isLoading || isSending || !input.trim()"
               @click="handleSendClick"
             />
           </form>
