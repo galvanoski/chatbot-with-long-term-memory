@@ -112,6 +112,16 @@ html.dark .shiki span {
   background: #e9e9ec;
 }
 
+.left-recent-item-active {
+  background: #dfe4ff;
+  color: #1f2a5a;
+  font-weight: 600;
+}
+
+.left-recent-item-active:hover {
+  background: #d1d9ff;
+}
+
 .main-surface {
   min-width: 0;
   background: #fff;

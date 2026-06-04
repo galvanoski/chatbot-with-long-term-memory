@@ -99,3 +99,83 @@ test('creates a chat and renders returned messages', async ({ page }) => {
   await expect(page.getByTestId('thumbs-up')).toBeVisible()
   await expect(page.getByTestId('thumbs-down')).toBeVisible()
 })
+
+test('disables the composer while a thread is awaiting approval', async ({ page }) => {
+  const threadId = '22222222-2222-4222-8222-222222222222'
+
+  await page.route('**/api/threads', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([])
+    })
+  })
+
+  await page.route(`**/api/threads/${threadId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: threadId,
+        title: 'Awaiting approval thread',
+        created_at: '2026-06-03T12:00:00Z',
+        updated_at: '2026-06-03T12:00:01Z',
+        status: 'awaiting_approval',
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: 'Bitte eine neue Kampagne',
+            created_at: '2026-06-03T12:00:00Z'
+          },
+          {
+            id: 'm2',
+            role: 'assistant',
+            content: 'Borrador para: Bitte eine neue Kampagne',
+            created_at: '2026-06-03T12:00:01Z'
+          }
+        ],
+        pending_copy: {
+          content: 'Borrador para: Bitte eine neue Kampagne',
+          hashtags: ['#geekcat'],
+          parts: {
+            hook: 'Hook',
+            body: 'Body',
+            cta: 'CTA'
+          }
+        }
+      })
+    })
+  })
+
+  await page.goto(`/chat/${threadId}`)
+
+  await expect(page.getByTestId('approval-panel')).toBeVisible()
+  await expect(page.getByTestId('chat-prompt')).toBeDisabled()
+  await expect(page.getByTestId('chat-submit')).toBeDisabled()
+})
+
+test('shows a visible error and retry action when thread loading fails', async ({ page }) => {
+  const threadId = '33333333-3333-4333-8333-333333333333'
+
+  await page.route('**/api/threads', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([])
+    })
+  })
+
+  await page.route(`**/api/threads/${threadId}`, async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'Backend unavailable' })
+    })
+  })
+
+  await page.goto(`/chat/${threadId}`)
+
+  await expect(page.getByTestId('chat-empty-state')).toBeVisible()
+  await expect(page.getByRole('button', { name: /retry/i })).toBeVisible()
+})

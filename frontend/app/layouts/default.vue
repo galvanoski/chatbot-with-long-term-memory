@@ -1,12 +1,15 @@
 <script setup lang="ts">
 const chat = useGeekCatChat()
 await chat.fetchThreads()
+const route = useRoute()
 
 const { groups } = useChatGroups(chat.threads)
 const recentItems = computed(() => {
   const all = groups.value.flatMap(group => group.items)
   return all.slice(0, 20)
 })
+
+const activeThreadId = computed(() => route.params.id as string | undefined)
 
 const quickLinks = [
   { label: 'New chat', icon: 'i-lucide-square-pen', to: '/' },
@@ -48,6 +51,7 @@ defineShortcuts({
             :key="item.id"
             :to="`/chat/${item.id}`"
             class="left-recent-item"
+            :class="item.id === activeThreadId ? 'left-recent-item-active' : ''"
           >
             {{ item.label }}
           </NuxtLink>

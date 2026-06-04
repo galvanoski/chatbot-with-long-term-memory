@@ -4,6 +4,7 @@ const loading = ref(false)
 const isMounted = ref(false)
 
 const chat = useGeekCatChat()
+const chatError = computed(() => chat.error.value)
 
 onMounted(() => {
   isMounted.value = true
@@ -53,6 +54,15 @@ const suggestions = [
   <div class="flex-1 flex flex-col items-center justify-center gap-6 p-8">
     <span v-if="isMounted" data-testid="home-mounted" class="hidden" />
 
+    <UAlert
+      v-if="chatError"
+      class="w-full max-w-2xl"
+      color="warning"
+      variant="soft"
+      icon="i-lucide-triangle-alert"
+      :title="chatError"
+    />
+
     <div class="text-center">
       <h1 class="text-3xl sm:text-4xl text-highlighted font-bold">
         {{ greeting }}
@@ -65,6 +75,7 @@ const suggestions = [
         v-model="input"
         data-testid="home-prompt"
         :status="loading ? 'streaming' : 'ready'"
+        :disabled="loading"
         placeholder="Beispiel: Promote den HODL TIGHT Hoodie fuer Blockchain Engineers"
         class="[view-transition-name:chat-prompt]"
         variant="subtle"

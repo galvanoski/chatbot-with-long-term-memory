@@ -6,6 +6,19 @@ export interface Message {
   pending_approval?: boolean
 }
 
+export interface UIMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  name: string
+  content: string
+  parts: Array<{
+    type: 'text'
+    text: string
+  }>
+  created_at: string
+  pending_approval?: boolean
+}
+
 export interface Thread {
   id: string
   title: string | null

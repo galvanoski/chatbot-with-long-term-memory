@@ -20,7 +20,7 @@ const chat = useGeekCatChat()
 await chat.loadThread(chatId)
 
 async function send() {
-  if (!input.value.trim() || unref(chat.loading)) return
+  if (!input.value.trim() || unref(chat.loading) || unref(chat.sending) || isAwaiting.value) return
   const text = input.value
   input.value = ''
   return chat.sendMessage(text)
@@ -28,6 +28,10 @@ async function send() {
 
 async function handleSendClick() {
   await send()
+}
+
+async function retryLoadThread() {
+  await chat.loadThread(chatId)
 }
 
 onMounted(async () => {
@@ -89,6 +93,7 @@ async function submitFeedback() {
 
 const input = ref('')
 const isLoading = computed(() => unref(chat.loading))
+const isSending = computed(() => unref(chat.sending))
 const isAwaiting = computed(() => unref(chat.isAwaitingApproval))
 const pending = computed(() => unref(chat.pendingCopy))
 const currentThread = computed(() => unref(chat.currentThread))
@@ -111,7 +116,7 @@ const displayedMessages = computed(() => {
   return isDuplicateDraft ? items.slice(0, -1) : items
 })
 
-function messageText(message: any) {
+function messageText(message: { parts?: Array<{ text?: string }>; content?: string }) {
   return message?.parts?.[0]?.text || message?.content || ''
 }
 
@@ -185,6 +190,21 @@ const debugState = computed(() => JSON.stringify({
     </div>
 
     <template v-if="currentThread">
+      <div v-if="chatError" class="border-b border-default bg-warning/10 px-4 py-3">
+        <div class="mx-auto flex max-w-3xl items-center justify-between gap-3">
+          <UAlert
+            color="warning"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            :title="chatError"
+            class="flex-1"
+          />
+          <UButton size="sm" color="neutral" variant="outline" @click="retryLoadThread">
+            Retry
+          </UButton>
+        </div>
+      </div>
+
       <div class="chat-topbar">
         <div class="chat-topbar-inner">
           <h1 class="chat-topbar-title">ChatGPT</h1>
@@ -242,8 +262,8 @@ const debugState = computed(() => JSON.stringify({
                   variant="ghost"
                   color="neutral"
                   icon="i-lucide-refresh-cw"
-                  :loading="regenerateProcessing || isLoading"
-                  :disabled="regenerateProcessing || isLoading"
+                  :loading="regenerateProcessing || isLoading || isSending"
+                  :disabled="regenerateProcessing || isLoading || isSending || isAwaiting"
                   @click="handleRegenerate"
                 >
                   Regenerate
@@ -263,7 +283,8 @@ const debugState = computed(() => JSON.stringify({
                   variant="ghost"
                   color="neutral"
                   icon="i-lucide-thumbs-up"
-                  :loading="isLoading"
+                  :loading="isLoading || isSending"
+                  :disabled="isLoading || isSending || isAwaiting"
                   @click="handleApprove"
                 />
                 <UButton
@@ -272,7 +293,7 @@ const debugState = computed(() => JSON.stringify({
                   variant="ghost"
                   color="neutral"
                   icon="i-lucide-thumbs-down"
-                  :disabled="isLoading || feedbackProcessing"
+                  :disabled="isLoading || isSending || feedbackProcessing || isAwaiting"
                   @click="handleReject"
                 />
               </div>
@@ -362,7 +383,7 @@ const debugState = computed(() => JSON.stringify({
         <div class="mx-auto w-full max-w-3xl">
           <form class="chat-composer-form" @submit.prevent="send">
             <UButton icon="i-lucide-plus" variant="ghost" color="neutral" class="rounded-full" />
-            <UTextarea
+            <UChatPrompt
               v-model="input"
               data-testid="chat-prompt"
               autoresize
@@ -370,7 +391,7 @@ const debugState = computed(() => JSON.stringify({
               :maxrows="6"
               placeholder="Ask anything"
               class="flex-1"
-              :disabled="isLoading"
+              :disabled="isLoading || isSending || isAwaiting"
               @keydown.enter.exact.prevent="send"
             />
             <UButton icon="i-lucide-mic" variant="ghost" color="neutral" class="rounded-full" />
@@ -379,8 +400,8 @@ const debugState = computed(() => JSON.stringify({
               icon="i-lucide-arrow-up"
               color="neutral"
               class="rounded-full"
-              :loading="isLoading"
-              :disabled="isLoading || !input.trim()"
+              :loading="isLoading || isSending"
+              :disabled="isLoading || isSending || isAwaiting || !input.trim()"
               @click="handleSendClick"
             />
           </form>
@@ -395,8 +416,26 @@ const debugState = computed(() => JSON.stringify({
     </template>
 
     <template v-else>
-      <div data-testid="chat-empty-state" class="flex-1 flex items-center justify-center text-muted">
-        <p>Thread nicht gefunden.</p>
+      <div data-testid="chat-empty-state" class="flex-1 flex items-center justify-center px-4 text-muted">
+        <div class="mx-auto w-full max-w-md space-y-3 text-center">
+          <UAlert
+            v-if="chatError"
+            color="warning"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            :title="chatError"
+          />
+          <UAlert
+            v-else
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-message-circle-off"
+            title="Thread nicht gefunden"
+          />
+          <UButton color="neutral" variant="outline" @click="retryLoadThread">
+            Retry
+          </UButton>
+        </div>
       </div>
     </template>
   </div>

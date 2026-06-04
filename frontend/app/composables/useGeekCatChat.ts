@@ -1,13 +1,16 @@
-import type { Thread, ThreadListItem, ThreadState, SendMessageResponse } from '#shared/types/thread'
+import type { Thread, ThreadListItem, ThreadState, SendMessageResponse, UIMessage } from '#shared/types/thread'
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 async function streamAssistantText(
-  finalMessages: any[],
-  setMessages: (msgs: any[]) => void
+  finalMessages: UIMessage[],
+  setMessages: (msgs: UIMessage[]) => void,
+  signal?: AbortSignal
 ) {
+  if (signal?.aborted) return
+
   const assistantIndex = [...finalMessages]
     .map((m, idx) => ({ role: m.role, idx }))
     .reverse()
@@ -19,6 +22,10 @@ async function streamAssistantText(
   }
 
   const assistant = finalMessages[assistantIndex]
+  if (!assistant) {
+    setMessages(finalMessages)
+    return
+  }
   const finalText = assistant?.parts?.[0]?.text ?? ''
 
   if (!finalText) {
@@ -26,7 +33,10 @@ async function streamAssistantText(
     return
   }
 
-  const working = finalMessages.map(m => ({ ...m }))
+  const working: UIMessage[] = finalMessages.map(message => ({
+    ...message,
+    parts: [...message.parts]
+  }))
   working[assistantIndex] = {
     ...assistant,
     parts: [{ type: 'text' as const, text: '' }]
@@ -37,6 +47,7 @@ async function streamAssistantText(
   const step = Math.max(1, Math.ceil(finalText.length / chunks))
 
   for (let cursor = step; cursor <= finalText.length; cursor += step) {
+    if (signal?.aborted) return
     working[assistantIndex] = {
       ...assistant,
       parts: [{ type: 'text' as const, text: finalText.slice(0, cursor) }]
@@ -45,10 +56,11 @@ async function streamAssistantText(
     await sleep(18)
   }
 
+  if (signal?.aborted) return
   setMessages(finalMessages)
 }
 
-export function transformMessages(msgs: Thread['messages']): any[] {
+export function transformMessages(msgs: Thread['messages']): UIMessage[] {
   return (msgs ?? []).filter(Boolean).map(m => ({
     ...m,
     name: m.role === 'assistant' ? 'The Geek Cat' : 'Du',
@@ -59,10 +71,12 @@ export function transformMessages(msgs: Thread['messages']): any[] {
 export function useGeekCatChat() {
   const threads = useState<ThreadListItem[]>('geekcat-threads', () => [])
   const currentThread = useState<Thread | null>('geekcat-current-thread', () => null)
-  const messages = useState<any[]>('geekcat-messages', () => [])
+  const messages = useState<UIMessage[]>('geekcat-messages', () => [])
   const loading = useState<boolean>('geekcat-loading', () => false)
+  const sending = useState<boolean>('geekcat-sending', () => false)
   const error = useState<string | null>('geekcat-error', () => null)
   const polling = useState<boolean>('geekcat-polling', () => false)
+  const animationController = shallowRef<AbortController | null>(null)
 
   const isAwaitingApproval = computed(() => currentThread.value?.status === 'awaiting_approval')
   const pendingCopy = computed(() => currentThread.value?.pending_copy)
@@ -95,11 +109,16 @@ export function useGeekCatChat() {
     upsertThreadListItem(t)
   }
 
+  function cancelMessageAnimation() {
+    animationController.value?.abort()
+    animationController.value = null
+  }
+
   async function fetchThreads() {
     try {
       threads.value = await $fetch<ThreadListItem[]>('/api/threads')
-    } catch (e: any) {
-      error.value = e?.message ?? 'Failed to load threads'
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to load threads'
     }
   }
 
@@ -110,8 +129,8 @@ export function useGeekCatChat() {
       const thread = await $fetch<Thread>('/api/threads', { method: 'POST' })
       setFromThread(thread)
       return thread.id
-    } catch (e: any) {
-      error.value = e?.message ?? 'Failed to create thread'
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to create thread'
       return null
     } finally {
       loading.value = false
@@ -123,17 +142,20 @@ export function useGeekCatChat() {
     error.value = null
     try {
       setFromThread(await $fetch<Thread>(`/api/threads/${id}`))
-    } catch (e: any) {
-      error.value = e?.message ?? 'Failed to load thread'
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to load thread'
     } finally {
       loading.value = false
     }
   }
 
   async function sendMessage(text: string): Promise<boolean> {
-    if (!currentThread.value) return false
+    if (!currentThread.value || sending.value) return false
     const previousThreadMessages = [...currentThread.value.messages]
     const previousUiMessages = [...messages.value]
+    cancelMessageAnimation()
+    const controller = new AbortController()
+    animationController.value = controller
 
     const optimisticUserMessage = {
       id: `temp-user-${Date.now()}`,
@@ -152,6 +174,7 @@ export function useGeekCatChat() {
     ]
 
     loading.value = true
+    sending.value = true
     error.value = null
     try {
       const res = await $fetch<SendMessageResponse>(
@@ -173,15 +196,19 @@ export function useGeekCatChat() {
       const finalUiMessages = transformMessages(res.messages)
       await streamAssistantText(finalUiMessages, (next) => {
         messages.value = next
-      })
+      }, controller.signal)
       return true
-    } catch (e: any) {
+    } catch (errorValue: unknown) {
       currentThread.value.messages = previousThreadMessages
       messages.value = previousUiMessages
-      error.value = e?.message ?? 'Failed to send message'
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to send message'
       return false
     } finally {
+      if (animationController.value === controller) {
+        animationController.value = null
+      }
       loading.value = false
+      sending.value = false
     }
   }
 
@@ -215,8 +242,8 @@ export function useGeekCatChat() {
       messages.value = transformMessages(res.messages)
       upsertThreadListItem(currentThread.value)
       return true
-    } catch (e: any) {
-      error.value = e?.message ?? 'Failed to approve'
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to approve'
       return false
     } finally {
       loading.value = false
@@ -250,8 +277,8 @@ export function useGeekCatChat() {
       messages.value = transformMessages(res.messages)
       upsertThreadListItem(currentThread.value)
       return true
-    } catch (e: any) {
-      error.value = e?.message ?? 'Failed to reject'
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to reject'
       return false
     } finally {
       loading.value = false
@@ -286,8 +313,8 @@ export function useGeekCatChat() {
       messages.value = transformMessages(res.messages)
       upsertThreadListItem(currentThread.value)
       return true
-    } catch (e: any) {
-      error.value = e?.message ?? 'Failed to regenerate'
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to regenerate'
       return false
     } finally {
       loading.value = false
@@ -313,6 +340,7 @@ export function useGeekCatChat() {
     currentThread,
     messages,
     loading,
+    sending,
     error,
     polling,
     isAwaitingApproval,
@@ -324,6 +352,7 @@ export function useGeekCatChat() {
     approveCopy,
     rejectCopy,
     regenerateCopy,
-    pollState
+    pollState,
+    cancelMessageAnimation
   }
 }
