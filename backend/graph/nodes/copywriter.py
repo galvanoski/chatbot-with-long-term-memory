@@ -53,6 +53,14 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
     product_context_text = "\n\n".join(product_context[:3]) if product_context else "(no product context found)"
     trend = state.get("trend_insights", "")
     memes = state.get("meme_references", [])
+    human_feedback = (state.get("human_feedback", "") or "").strip()
+    feedback_section = ""
+    if human_feedback:
+        feedback_section = (
+            "\n\nIMPORTANT USER FEEDBACK (previous copy was rejected):\n"
+            f'"{human_feedback}"\n'
+            "Use this feedback to improve the new copy. Address the user's concerns directly.\n"
+        )
 
     system_prompt = (
         "You are a sarcastic, ironic, and humorous marketing copywriter "
@@ -72,6 +80,7 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         f"{product_context_text}\n\n"
         f"Current trend context:\n{trend}\n\n"
         f"Meme references:\n{chr(10).join(f'- {m}' for m in memes)}\n\n"
+        f"{feedback_section}"
         "Return ONLY valid JSON with this exact schema:\n"
         "{\n"
         "  \"hook\": \"short sarcastic opener in German\",\n"

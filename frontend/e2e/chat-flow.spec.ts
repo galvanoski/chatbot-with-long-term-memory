@@ -92,7 +92,7 @@ test('creates a chat and renders returned messages', async ({ page }) => {
   await homeSubmit.click()
 
   await expect(page).toHaveURL(new RegExp(`/chat/${threadId}$`))
-  await expect(page.getByTestId('chat-messages').getByText(prompt)).toBeVisible()
+  await expect(page.getByTestId('chat-messages').locator('.chat-user-bubble').first()).toContainText(prompt)
   await expect(page.getByTestId('approval-panel')).toBeVisible()
   await expect(page.getByTestId('pending-copy-content')).toContainText(`Borrador para: ${prompt}`)
   await expect(page.getByTestId('approval-panel').getByText('#bitcoin')).toBeVisible()

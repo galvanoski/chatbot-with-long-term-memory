@@ -12,6 +12,8 @@ const editableBody = ref('')
 const editableCta = ref('')
 const editMode = ref(false)
 const feedbackNotice = ref('')
+const feedbackProcessing = ref(false)
+const regenerateProcessing = ref(false)
 
 const chat = useGeekCatChat()
 
@@ -57,13 +59,31 @@ function handleReject() {
   showFeedback.value = true
 }
 
+async function handleRegenerate() {
+  regenerateProcessing.value = true
+  try {
+    const ok = await chat.regenerateCopy()
+    if (ok) {
+      feedbackNotice.value = 'Neue Variante wurde erstellt.'
+      showFeedback.value = false
+    }
+  } finally {
+    regenerateProcessing.value = false
+  }
+}
+
 async function submitFeedback() {
   const note = feedbackInput.value?.trim() || 'thumbs_down'
-  const ok = await chat.rejectCopy(note)
-  if (ok) {
-    feedbackNotice.value = 'Danke! Dein Feedback wurde gespeichert und wird fuer Verbesserungen genutzt.'
-    showFeedback.value = false
-    feedbackInput.value = ''
+  feedbackProcessing.value = true
+  try {
+    const ok = await chat.rejectCopy(note)
+    if (ok) {
+      feedbackNotice.value = 'Danke! Neue Version basierend auf deinem Feedback wurde erstellt.'
+      showFeedback.value = false
+      feedbackInput.value = ''
+    }
+  } finally {
+    feedbackProcessing.value = false
   }
 }
 
@@ -75,6 +95,7 @@ const currentThread = computed(() => unref(chat.currentThread))
 const threadMessages = computed(() => unref(chat.messages))
 const chatError = computed(() => unref(chat.error))
 const showDebugPanel = computed(() => import.meta.dev && debugEnabled.value)
+const threadTitle = computed(() => currentThread.value?.title || 'Neuer Chat')
 
 const displayedMessages = computed(() => {
   const items = [...threadMessages.value]
@@ -90,6 +111,10 @@ const displayedMessages = computed(() => {
   return isDuplicateDraft ? items.slice(0, -1) : items
 })
 
+function messageText(message: any) {
+  return message?.parts?.[0]?.text || message?.content || ''
+}
+
 function useGeneratedDraft() {
   if (!pending.value) return
   editableHook.value = pending.value.parts?.hook ?? ''
@@ -102,29 +127,6 @@ function getDraftPreview() {
   if (!editMode.value) return pending.value.content
   return [editableHook.value, editableBody.value, editableCta.value].filter(Boolean).join('\n\n')
 }
-
-const draftSections = computed(() => {
-  if (!pending.value) return []
-
-  if (editMode.value) {
-    return [
-      { label: 'Hook', text: editableHook.value },
-      { label: 'Body', text: editableBody.value },
-      { label: 'CTA', text: editableCta.value }
-    ].filter(section => section.text?.trim())
-  }
-
-  const parts = pending.value.parts
-  if (parts?.hook || parts?.body || parts?.cta) {
-    return [
-      { label: 'Hook', text: parts.hook || '' },
-      { label: 'Body', text: parts.body || '' },
-      { label: 'CTA', text: parts.cta || '' }
-    ].filter(section => section.text?.trim())
-  }
-
-  return [{ label: 'Entwurf', text: pending.value.content || '' }].filter(section => section.text?.trim())
-})
 
 async function copyDraftToClipboard() {
   const text = getDraftPreview().trim()
@@ -168,7 +170,7 @@ const debugState = computed(() => JSON.stringify({
 </script>
 
 <template>
-  <div class="flex-1 flex flex-col h-full min-h-0">
+  <div class="chat-shell">
     <div
       v-if="showDebugPanel"
       data-testid="chat-debug"
@@ -183,192 +185,205 @@ const debugState = computed(() => JSON.stringify({
     </div>
 
     <template v-if="currentThread">
-      <div
-        v-if="!isLoading && !threadMessages.length"
-        class="mx-4 mt-3 rounded-lg border border-default bg-muted/25 px-4 py-3"
-      >
-        <p class="text-sm font-semibold">Los geht's</p>
-        <p class="text-xs text-muted mt-1">Schreibe unten deinen Prompt oder starte mit einem Chip von der Startseite.</p>
+      <div class="chat-topbar">
+        <div class="chat-topbar-inner">
+          <h1 class="chat-topbar-title">ChatGPT</h1>
+        </div>
       </div>
 
-      <div
-        v-if="isLoading"
-        data-testid="chat-processing"
-        class="mx-4 mt-3 rounded-lg border border-default bg-muted/40 px-3 py-2 text-xs text-muted"
-      >
-        Denke nach... Analysiere Produktkontext und erstelle Entwurf.
-      </div>
+      <div class="chat-scroll-area">
+        <div
+          v-if="!isLoading && !threadMessages.length"
+          class="mx-auto w-full max-w-3xl rounded-lg border border-default bg-muted/25 px-4 py-3"
+        >
+          <p class="text-sm font-semibold">Los geht's</p>
+          <p class="text-xs text-muted mt-1">Schreibe unten deinen Prompt oder starte mit einem Chip von der Startseite.</p>
+        </div>
 
-      <UChatMessages
-        :key="chatId"
-        data-testid="chat-messages"
-        class="flex-1 overflow-y-auto px-4 py-4"
-        :messages="(displayedMessages as any)"
-        :assistant="{ avatar: { src: '/favicon.ico' } }"
-      />
+        <div
+          v-if="isLoading"
+          data-testid="chat-processing"
+          class="mx-auto mb-4 w-full max-w-3xl rounded-lg border border-default bg-muted/40 px-3 py-2 text-xs text-muted"
+        >
+          Der Agent analysiert gerade Kontext und formuliert eine Antwort...
+        </div>
 
-      <!-- HITL: Approval Panel -->
-      <div
-        v-if="isAwaiting && pending"
-        data-testid="approval-panel"
-        class="border-t border-default bg-elevated px-4 py-3"
-      >
-        <div class="max-w-2xl mx-auto space-y-3">
-          <div class="flex items-center gap-2">
-            <UBadge color="warning" variant="soft" size="sm">
-              Freigabe erforderlich
-            </UBadge>
-            <span class="text-sm text-muted">Das ist die finale Antwort. Reagiere direkt oder bearbeite optional.</span>
+        <div :key="chatId" data-testid="chat-messages" class="mx-auto w-full max-w-3xl space-y-6 pb-8">
+          <div
+            v-for="msg in displayedMessages"
+            :key="msg.id"
+            class="chat-row"
+            :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
+          >
+            <div v-if="msg.role === 'user'" class="chat-user-bubble">
+              {{ messageText(msg) }}
+            </div>
+
+            <div v-else class="chat-assistant-block">
+              <p class="chat-assistant-text">{{ messageText(msg) }}</p>
+            </div>
           </div>
 
-          <div v-if="feedbackNotice" class="rounded-md border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
-            {{ feedbackNotice }}
-          </div>
+          <div v-if="isAwaiting && pending" data-testid="approval-panel" class="chat-row justify-start">
+            <div class="chat-assistant-block space-y-4">
+              <p data-testid="pending-copy-content" class="chat-assistant-text">{{ getDraftPreview() }}</p>
 
-          <UCard variant="subtle">
-            <div class="space-y-3">
-              <div
-                v-for="section in draftSections"
-                :key="section.label"
-                class="rounded-md border border-default/60 bg-default/60 px-3 py-2"
-              >
-                <p class="text-[11px] uppercase tracking-wide text-muted">{{ section.label }}</p>
-                <p data-testid="pending-copy-content" class="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{{ section.text }}</p>
+              <div v-if="feedbackNotice" class="rounded-md border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+                {{ feedbackNotice }}
               </div>
 
               <div class="flex flex-wrap items-center gap-2">
-                <UButton size="sm" variant="soft" color="neutral" icon="i-lucide-copy" @click="copyDraftToClipboard">
-                  Kopieren
+                <UButton size="sm" variant="ghost" color="neutral" icon="i-lucide-copy" @click="copyDraftToClipboard">
+                  Copy
+                </UButton>
+                <UButton
+                  data-testid="regenerate-response"
+                  size="sm"
+                  variant="ghost"
+                  color="neutral"
+                  icon="i-lucide-refresh-cw"
+                  :loading="regenerateProcessing || isLoading"
+                  :disabled="regenerateProcessing || isLoading"
+                  @click="handleRegenerate"
+                >
+                  Regenerate
                 </UButton>
                 <UButton
                   size="sm"
-                  variant="soft"
+                  variant="ghost"
                   color="neutral"
                   icon="i-lucide-pencil"
                   @click="editMode = !editMode"
                 >
-                  {{ editMode ? 'Bearbeitung ausblenden' : 'Bearbeiten' }}
+                  {{ editMode ? 'Hide edit' : 'Edit' }}
                 </UButton>
                 <UButton
                   data-testid="thumbs-up"
                   size="sm"
-                  variant="soft"
-                  color="success"
+                  variant="ghost"
+                  color="neutral"
                   icon="i-lucide-thumbs-up"
                   :loading="isLoading"
                   @click="handleApprove"
-                >
-                  Hilfreich
-                </UButton>
+                />
                 <UButton
                   data-testid="thumbs-down"
                   size="sm"
-                  variant="soft"
-                  color="error"
+                  variant="ghost"
+                  color="neutral"
                   icon="i-lucide-thumbs-down"
-                  :disabled="isLoading"
+                  :disabled="isLoading || feedbackProcessing"
                   @click="handleReject"
-                >
-                  Unpassend
-                </UButton>
+                />
               </div>
 
               <div v-if="editMode" class="grid gap-3 md:grid-cols-3">
                 <div>
                   <p class="text-xs text-muted mb-1">Hook</p>
-                  <UTextarea
-                    v-model="editableHook"
-                    data-testid="pending-hook"
-                    autoresize
-                    :rows="4"
-                    placeholder="Kurzer, sarkastischer Hook"
-                  />
+                  <UTextarea v-model="editableHook" data-testid="pending-hook" autoresize :rows="4" />
                 </div>
 
                 <div>
                   <p class="text-xs text-muted mb-1">Body</p>
-                  <UTextarea
-                    v-model="editableBody"
-                    data-testid="pending-body"
-                    autoresize
-                    :rows="6"
-                    placeholder="Haupttext der Veroeffentlichung"
-                  />
+                  <UTextarea v-model="editableBody" data-testid="pending-body" autoresize :rows="6" />
                 </div>
 
                 <div>
                   <p class="text-xs text-muted mb-1">CTA</p>
-                  <UTextarea
-                    v-model="editableCta"
-                    data-testid="pending-cta"
-                    autoresize
-                    :rows="4"
-                    placeholder="Kurzer CTA"
-                  />
+                  <UTextarea v-model="editableCta" data-testid="pending-cta" autoresize :rows="4" />
                 </div>
               </div>
 
-              <div class="flex justify-end">
-                <UButton
-                  size="xs"
-                  variant="ghost"
+              <div v-if="pending.hashtags?.length" class="flex flex-wrap gap-1">
+                <UBadge
+                  v-for="tag in pending.hashtags"
+                  :key="tag"
                   color="neutral"
-                  @click="useGeneratedDraft"
+                  variant="outline"
+                  size="sm"
                 >
-                  KI-Vorschlag wiederherstellen
-                </UButton>
+                  {{ tag }}
+                </UBadge>
+              </div>
+
+              <div v-if="pending.sources?.length" class="space-y-2" data-testid="chat-sources">
+                <p class="text-xs font-semibold uppercase tracking-wide text-muted">Sources</p>
+                <div class="flex flex-wrap gap-2">
+                  <a
+                    v-for="source in pending.sources"
+                    :key="`${source.label}-${source.url || ''}`"
+                    :href="source.url || '#'
+                    "
+                    class="inline-flex items-center gap-1 rounded-full border border-default px-2 py-1 text-xs text-toned hover:bg-muted/40"
+                    :target="source.url ? '_blank' : undefined"
+                    :rel="source.url ? 'noopener noreferrer' : undefined"
+                    @click.prevent="!source.url"
+                  >
+                    <UIcon name="i-lucide-link" class="size-3" />
+                    <span>{{ source.label }}</span>
+                  </a>
+                </div>
+              </div>
+
+              <div v-if="showFeedback" class="space-y-2">
+                <div
+                  v-if="feedbackProcessing || isLoading"
+                  class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+                >
+                  Agent verarbeitet dein Feedback und erstellt gerade eine neue Version...
+                </div>
+
+                <div class="flex gap-2 items-start">
+                  <UTextarea
+                    v-model="feedbackInput"
+                    placeholder="Was war unpassend?"
+                    size="sm"
+                    class="flex-1"
+                    :disabled="feedbackProcessing || isLoading"
+                  />
+                  <UButton
+                    size="sm"
+                    color="neutral"
+                    :loading="feedbackProcessing || isLoading"
+                    :disabled="feedbackProcessing || isLoading"
+                    @click="submitFeedback"
+                  >
+                    {{ feedbackProcessing || isLoading ? 'Regenerating...' : 'Send' }}
+                  </UButton>
+                </div>
               </div>
             </div>
-            <div v-if="pending.hashtags?.length" class="flex flex-wrap gap-1 mt-2">
-              <UBadge
-                v-for="tag in pending.hashtags"
-                :key="tag"
-                color="neutral"
-                variant="outline"
-                size="sm"
-              >
-                {{ tag }}
-              </UBadge>
-            </div>
-          </UCard>
-
-          <div v-if="showFeedback" class="flex gap-2 items-start">
-            <UTextarea
-              v-model="feedbackInput"
-              placeholder="Was war unpassend? Dieses Feedback wird fuer Verbesserungen gespeichert."
-              size="sm"
-              class="flex-1"
-            />
-            <UButton
-              size="sm"
-              color="neutral"
-              :loading="isLoading"
-              @click="submitFeedback"
-            >
-              Senden
-            </UButton>
           </div>
         </div>
       </div>
 
       <!-- Input -->
-      <div class="border-t border-default p-4">
-        <div class="max-w-2xl mx-auto">
-          <UChatPrompt
-            v-model="input"
-            data-testid="chat-prompt"
-            :status="isLoading ? 'streaming' : 'ready'"
-            placeholder="Beschreibe Produkt, Zielgruppe und gewuenschten Ton"
-            variant="subtle"
-            class="[view-transition-name:chat-prompt]"
-            @submit="send"
-          >
-            <template #footer>
-              <div class="flex w-full justify-end">
-                <UChatPromptSubmit data-testid="chat-submit" :on-click="handleSendClick" color="neutral" size="sm" />
-              </div>
-            </template>
-          </UChatPrompt>
+      <div class="chat-composer-shell">
+        <div class="mx-auto w-full max-w-3xl">
+          <form class="chat-composer-form" @submit.prevent="send">
+            <UButton icon="i-lucide-plus" variant="ghost" color="neutral" class="rounded-full" />
+            <UTextarea
+              v-model="input"
+              data-testid="chat-prompt"
+              autoresize
+              :rows="1"
+              :maxrows="6"
+              placeholder="Ask anything"
+              class="flex-1"
+              :disabled="isLoading"
+              @keydown.enter.exact.prevent="send"
+            />
+            <UButton icon="i-lucide-mic" variant="ghost" color="neutral" class="rounded-full" />
+            <UButton
+              data-testid="chat-submit"
+              icon="i-lucide-arrow-up"
+              color="neutral"
+              class="rounded-full"
+              :loading="isLoading"
+              :disabled="isLoading || !input.trim()"
+              @click="handleSendClick"
+            />
+          </form>
         </div>
       </div>
     </template>

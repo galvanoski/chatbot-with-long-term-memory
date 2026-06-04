@@ -18,6 +18,11 @@ export interface Thread {
     hashtags: string[]
     product_name?: string
     product_url?: string
+    sources?: Array<{
+      label: string
+      url?: string
+      type?: string
+    }>
     parts?: {
       hook?: string
       body?: string
@@ -42,6 +47,11 @@ export interface ThreadState {
     hashtags: string[]
     product_name?: string
     product_url?: string
+    sources?: Array<{
+      label: string
+      url?: string
+      type?: string
+    }>
     parts?: {
       hook?: string
       body?: string
@@ -60,6 +70,11 @@ export interface SendMessageResponse {
     hashtags: string[]
     product_name?: string
     product_url?: string
+    sources?: Array<{
+      label: string
+      url?: string
+      type?: string
+    }>
     parts?: {
       hook?: string
       body?: string

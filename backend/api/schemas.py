@@ -21,6 +21,11 @@ class ApprovalRequest(BaseModel):
     edited_parts: Optional[dict[str, str]] = None
 
 
+class RegenerateRequest(BaseModel):
+    user_id: str
+    instruction: Optional[str] = None
+
+
 class BrandRuleSaveRequest(BaseModel):
     user_id: str
     key: str

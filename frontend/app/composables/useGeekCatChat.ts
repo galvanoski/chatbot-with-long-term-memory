@@ -228,7 +228,12 @@ export function useGeekCatChat() {
     loading.value = true
     error.value = null
     try {
-      const res = await $fetch<{ status: string; messages: Thread['messages'] }>(
+      const res = await $fetch<{
+        status: string
+        messages: Thread['messages']
+        pending_copy?: Thread['pending_copy']
+        title?: string
+      }>(
         `/api/threads/${currentThread.value.id}/reject`,
         {
           method: 'POST',
@@ -237,13 +242,52 @@ export function useGeekCatChat() {
       )
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status as Thread['status']
-      currentThread.value.pending_copy = undefined
+      currentThread.value.pending_copy = res.pending_copy
+      if (res.title) {
+        currentThread.value.title = res.title
+      }
       currentThread.value.updated_at = new Date().toISOString()
       messages.value = transformMessages(res.messages)
       upsertThreadListItem(currentThread.value)
       return true
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to reject'
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function regenerateCopy(instruction?: string): Promise<boolean> {
+    if (!currentThread.value) return false
+    loading.value = true
+    error.value = null
+    try {
+      const res = await $fetch<{
+        status: string
+        messages: Thread['messages']
+        pending_copy?: Thread['pending_copy']
+        title?: string
+      }>(
+        `/api/threads/${currentThread.value.id}/regenerate`,
+        {
+          method: 'POST',
+          body: instruction ? { instruction } : undefined
+        }
+      )
+
+      currentThread.value.messages = res.messages
+      currentThread.value.status = res.status as Thread['status']
+      currentThread.value.pending_copy = res.pending_copy
+      if (res.title) {
+        currentThread.value.title = res.title
+      }
+      currentThread.value.updated_at = new Date().toISOString()
+      messages.value = transformMessages(res.messages)
+      upsertThreadListItem(currentThread.value)
+      return true
+    } catch (e: any) {
+      error.value = e?.message ?? 'Failed to regenerate'
       return false
     } finally {
       loading.value = false
@@ -279,6 +323,7 @@ export function useGeekCatChat() {
     sendMessage,
     approveCopy,
     rejectCopy,
+    regenerateCopy,
     pollState
   }
 }

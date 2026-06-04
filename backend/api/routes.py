@@ -17,6 +17,7 @@ from backend.api.schemas import (
     MemoryListResponse,
     MessageSendRequest,
     ProductCatalogBulkLoadRequest,
+    RegenerateRequest,
     ThreadCreateRequest,
 )
 from backend.graph.tools.rag import load_products_to_catalog
@@ -211,6 +212,55 @@ def _derive_thread_title_from_messages(messages: list[dict], max_len: int = 72) 
     return base[: max_len - 1].rstrip() + "..."
 
 
+def _extract_sources(state_values: dict) -> list[dict[str, str]]:
+    sources: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    metadata_sources = (state_values.get("copy_metadata") or {}).get("sources") or []
+    for source in metadata_sources:
+        if not isinstance(source, dict):
+            continue
+        label = str(source.get("label") or "Quelle").strip()
+        url = str(source.get("url") or "").strip()
+        key = f"{label}|{url}"
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append({"label": label, "url": url, "type": str(source.get("type") or "reference")})
+
+    for context_line in state_values.get("product_context", []) or []:
+        if not isinstance(context_line, str):
+            continue
+        name = ""
+        sku = ""
+        for segment in context_line.split("|"):
+            segment = segment.strip()
+            if segment.startswith("NAME="):
+                name = segment.split("=", 1)[1].strip()
+            elif segment.startswith("SKU="):
+                sku = segment.split("=", 1)[1].strip()
+
+        if not name and not sku:
+            continue
+        label = name or sku
+        source = {
+            "label": label,
+            "url": "",
+            "type": "product",
+        }
+        key = f"{source['label']}|{source['url']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(source)
+
+    for source in sources:
+        if not source.get("url") and source.get("type") == "product":
+            source["url"] = "https://thegeekcat.de"
+
+    return sources[:6]
+
+
 def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dict:
     """Return a frontend-ready thread payload from stored thread and graph state."""
     values = state_values or {}
@@ -230,7 +280,18 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
     messages = thread.get("messages", [])
     if values:
         messages = _extract_messages(values)
-        if draft_copy and not any(m["role"] == "assistant" for m in messages):
+        if draft_copy and status == "awaiting_approval":
+            # Keep a single canonical assistant draft at the end to avoid chatty duplicates.
+            while messages and messages[-1].get("role") == "assistant":
+                messages.pop()
+
+            messages.append({
+                "id": str(len(messages)),
+                "role": "assistant",
+                "content": draft_copy,
+                "created_at": dt.datetime.utcnow().isoformat(),
+            })
+        elif draft_copy and not any(m["role"] == "assistant" for m in messages):
             messages.append({
                 "id": str(len(messages)),
                 "role": "assistant",
@@ -240,12 +301,14 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
 
     pending_copy = None
     if status == "awaiting_approval" and draft_copy:
+        sources = _extract_sources(values)
         pending_copy = {
             "content": draft_copy,
             "hashtags": metadata.get("hashtags", []),
             "product_name": metadata.get("product_name"),
             "product_url": metadata.get("product_url"),
             "parts": metadata.get("parts", {}),
+            "sources": sources,
         }
 
     return {
@@ -568,6 +631,43 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
         "human_feedback": body.feedback,
     })
 
+    feedback_text = (body.feedback or "Bitte verfeinere den Text und behebe die genannten Probleme.").strip()
+    regeneration_prompt = f"Bitte ueberarbeite den Copy basierend auf diesem Feedback: {feedback_text}"
+
+    # Start a fresh generation pass that carries explicit human feedback context.
+    initial_state = {
+        "messages": [HumanMessage(content=regeneration_prompt)],
+        "user_id": body.user_id,
+        "thread_id": thread_id,
+        "approval_status": None,
+        "human_feedback": feedback_text,
+        "product_skus": [],
+        "trend_insights": "",
+        "meme_references": [],
+        "draft_copy_de": "",
+        "copy_metadata": {},
+        "publication_result": None,
+        "brand_rules": {},
+        "ltm_context": [],
+        "_analytics_log": [],
+        "_current_node": "",
+    }
+
+    if _middleware:
+        initial_state = _middleware.before_agent(initial_state, config)
+
+    try:
+        result = _graph.invoke(initial_state, config=config)
+    except Exception as exc:
+        logger.error("resume after reject failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Resume failed: {str(exc)}")
+
+    if _middleware:
+        result = _middleware.after_agent(result, config)
+
+    state_snapshot = _graph.get_state(config)
+    snap_values = state_snapshot.values if state_snapshot else result
+
     logger.info("copy rejected: thread=%s feedback=%s", thread_id, body.feedback)
     thread = _threads.get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
         "id": thread_id,
@@ -580,10 +680,13 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
     }
     _threads[thread_id] = thread
 
+    payload = _build_thread_payload(_threads[thread_id], snap_values)
+
     # Update thread store
     now = dt.datetime.utcnow().isoformat()
-    _threads[thread_id]["status"] = "active"
-    _threads[thread_id]["title"] = _derive_thread_title_from_messages(_threads[thread_id].get("messages", []))
+    _threads[thread_id]["status"] = payload["status"]
+    _threads[thread_id]["messages"] = payload["messages"]
+    _threads[thread_id]["title"] = _derive_thread_title_from_messages(payload["messages"])
     _threads[thread_id]["updated_at"] = now
     _save_thread_record(_threads[thread_id])
 
@@ -594,7 +697,88 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
             "feedback": body.feedback or "thumbs_down",
         })
 
-    return {"status": "rejected", "messages": _threads.get(thread_id, {}).get("messages", [])}
+    return {
+        "status": _threads[thread_id]["status"],
+        "messages": _threads[thread_id]["messages"],
+        "pending_copy": payload["pending_copy"],
+        "title": _threads[thread_id]["title"],
+    }
+
+
+@router.post("/chat/threads/{thread_id}/regenerate")
+def regenerate_copy(thread_id: str, body: RegenerateRequest):
+    """Regenerate copy from latest thread context with optional user instruction."""
+    if not _graph:
+        raise HTTPException(status_code=503, detail="Graph not initialised")
+
+    config = {"configurable": {"thread_id": thread_id, "user_id": body.user_id}}
+    instruction = (body.instruction or "Bitte erstelle eine neue Variante mit anderem Hook und CTA.").strip()
+
+    state_snapshot = _graph.get_state(config)
+    values = state_snapshot.values if state_snapshot else {}
+    prior_feedback = (values.get("human_feedback") or "").strip()
+    prompt = f"Bitte regeneriere den Copy. Zusatzeinweisung: {instruction}"
+    if prior_feedback:
+        prompt += f" Beruecksichtige auch dieses letzte Feedback: {prior_feedback}"
+
+    initial_state = {
+        "messages": [HumanMessage(content=prompt)],
+        "user_id": body.user_id,
+        "thread_id": thread_id,
+        "approval_status": None,
+        "human_feedback": prior_feedback or None,
+        "product_skus": [],
+        "trend_insights": "",
+        "meme_references": [],
+        "draft_copy_de": "",
+        "copy_metadata": {},
+        "publication_result": None,
+        "brand_rules": {},
+        "ltm_context": [],
+        "_analytics_log": [],
+        "_current_node": "",
+    }
+
+    if _middleware:
+        initial_state = _middleware.before_agent(initial_state, config)
+
+    try:
+        result = _graph.invoke(initial_state, config=config)
+    except Exception as exc:
+        logger.error("regenerate failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Regenerate failed: {str(exc)}")
+
+    if _middleware:
+        result = _middleware.after_agent(result, config)
+
+    state_snapshot = _graph.get_state(config)
+    snap_values = state_snapshot.values if state_snapshot else result
+
+    thread = _threads.get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+        "id": thread_id,
+        "user_id": body.user_id,
+        "title": None,
+        "created_at": dt.datetime.utcnow().isoformat(),
+        "updated_at": dt.datetime.utcnow().isoformat(),
+        "status": "active",
+        "messages": [],
+    }
+    _threads[thread_id] = thread
+    payload = _build_thread_payload(thread, snap_values)
+
+    now = dt.datetime.utcnow().isoformat()
+    _threads[thread_id]["status"] = payload["status"]
+    _threads[thread_id]["messages"] = payload["messages"]
+    _threads[thread_id]["title"] = _derive_thread_title_from_messages(payload["messages"])
+    _threads[thread_id]["updated_at"] = now
+    _save_thread_record(_threads[thread_id])
+
+    return {
+        "status": _threads[thread_id]["status"],
+        "messages": _threads[thread_id]["messages"],
+        "pending_copy": payload["pending_copy"],
+        "title": _threads[thread_id]["title"],
+    }
 
 
 # ── Long-Term Memory ──

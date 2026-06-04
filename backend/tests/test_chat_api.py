@@ -273,6 +273,10 @@ def test_reject_saves_human_feedback_event():
         json={"user_id": "u_test", "feedback": "too generic"},
     )
     assert reject.status_code == 200
+    payload = reject.json()
+    assert payload["status"] == "awaiting_approval"
+    assert payload["pending_copy"]["content"].startswith("Borrador para:")
+    assert any("too generic" in m["content"] for m in payload["messages"] if m["role"] == "user")
     events = routes._memory.events
     assert any(
         e["event_type"] == "human_feedback"
@@ -301,3 +305,26 @@ def test_approve_flow_updates_status_integration():
     approved_payload = approve.json()
     assert approved_payload["status"] == "published"
     assert len(approved_payload["messages"]) >= 1
+
+
+def test_regenerate_returns_new_pending_copy_and_sources():
+    client = _build_test_client()
+
+    create = client.post("/api/chat/threads", json={"user_id": "u_test"})
+    thread_id = create.json()["id"]
+
+    client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={"user_id": "u_test", "content": "Genera copy para hoodie"},
+    )
+
+    regenerate = client.post(
+        f"/api/chat/threads/{thread_id}/regenerate",
+        json={"user_id": "u_test", "instruction": "nuevo angulo"},
+    )
+
+    assert regenerate.status_code == 200
+    payload = regenerate.json()
+    assert payload["status"] == "awaiting_approval"
+    assert payload["pending_copy"]["content"].startswith("Borrador para:")
+    assert isinstance(payload["pending_copy"].get("sources", []), list)

@@ -1,23 +1,22 @@
 <script setup lang="ts">
-const sidebarOpen = ref(false)
-
 const chat = useGeekCatChat()
 await chat.fetchThreads()
 
 const { groups } = useChatGroups(chat.threads)
+const recentItems = computed(() => {
+  const all = groups.value.flatMap(group => group.items)
+  return all.slice(0, 20)
+})
 
-const items = computed(() => groups.value?.flatMap((group) => {
-  return [{
-    label: group.label,
-    type: 'label' as const
-  }, ...group.items.map(item => ({
-    label: item.label,
-    slot: 'chat' as const,
-    to: `/chat/${item.id}`,
-    icon: undefined,
-    class: { 'text-muted': !item.title }
-  }))]
-}))
+const quickLinks = [
+  { label: 'New chat', icon: 'i-lucide-square-pen', to: '/' },
+  { label: 'Search chats', icon: 'i-lucide-search', to: '/' },
+  { label: 'Library', icon: 'i-lucide-book-open', to: '/' },
+  { label: 'Projects', icon: 'i-lucide-folder', to: '/' },
+  { label: 'Apps', icon: 'i-lucide-layout-grid', to: '/' },
+  { label: 'Codex', icon: 'i-lucide-cpu', to: '/' },
+  { label: 'More', icon: 'i-lucide-ellipsis', to: '/' }
+]
 
 defineShortcuts({
   meta_o: () => navigateTo('/')
@@ -25,45 +24,39 @@ defineShortcuts({
 </script>
 
 <template>
-  <UDashboardGroup unit="rem">
-    <UDashboardSidebar
-      id="default"
-      v-model:open="sidebarOpen"
-      :min-size="12"
-      collapsible
-      resizable
-      class="border-r-0 py-4 dark:[--ui-bg-elevated:var(--ui-color-neutral-900)]"
-    >
-      <template #header="{ collapsed }">
-        <NuxtLink v-if="!collapsed" to="/" class="flex items-end gap-0.5">
-          <span class="text-xl font-bold text-highlighted">The Geek Cat</span>
+  <div class="app-shell">
+    <aside class="left-rail">
+      <div class="left-brand">The Geek Cat</div>
+
+      <nav class="left-nav">
+        <NuxtLink
+          v-for="item in quickLinks"
+          :key="item.label"
+          :to="item.to"
+          class="left-nav-item"
+        >
+          <UIcon :name="item.icon" class="size-4" />
+          <span>{{ item.label }}</span>
         </NuxtLink>
-        <UDashboardSidebarCollapse class="ms-auto" />
-      </template>
+      </nav>
 
-      <template #default="{ collapsed }">
-        <UNavigationMenu
-          :items="[{
-            label: 'New chat',
-            to: '/',
-            kbds: ['meta', 'o'],
-            icon: 'i-lucide-circle-plus'
-          }]"
-          :collapsed="collapsed"
-          orientation="vertical"
-        />
+      <div class="left-section">
+        <p class="left-section-title">Recents</p>
+        <div class="left-recents">
+          <NuxtLink
+            v-for="item in recentItems"
+            :key="item.id"
+            :to="`/chat/${item.id}`"
+            class="left-recent-item"
+          >
+            {{ item.label }}
+          </NuxtLink>
+        </div>
+      </div>
+    </aside>
 
-        <UNavigationMenu
-          v-if="!collapsed"
-          :items="items"
-          :collapsed="collapsed"
-          orientation="vertical"
-        />
-      </template>
-    </UDashboardSidebar>
-
-    <div class="flex-1 flex m-4 lg:ml-0 rounded-lg ring ring-default bg-default/75 shadow min-w-0 overflow-hidden">
+    <main class="main-surface">
       <slot />
-    </div>
-  </UDashboardGroup>
+    </main>
+  </div>
 </template>
