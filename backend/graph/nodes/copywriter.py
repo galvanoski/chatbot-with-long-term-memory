@@ -1,5 +1,7 @@
 import logging
 import os
+import json
+import re
 
 from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
@@ -8,6 +10,31 @@ from backend.graph.state import AgentState
 from backend.middleware.base import AgentMiddleware
 
 logger = logging.getLogger("geekcat.nodes.copywriter")
+
+
+def _extract_json_payload(raw: str) -> dict | None:
+    text = raw.strip()
+
+    # Strip optional markdown code fences.
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\\s*", "", text)
+        text = re.sub(r"\\s*```$", "", text)
+
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        pass
+
+    # Fallback: grab the first JSON object in the response.
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(0))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
 
 
 def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dict:
@@ -22,6 +49,8 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
     # Build base system prompt
     brand_rules = state.get("brand_rules", {})
     rules_text = "\n".join(f"- {k}: {v}" for k, v in brand_rules.items()) if brand_rules else ""
+    product_context = state.get("product_context", [])
+    product_context_text = "\n\n".join(product_context[:3]) if product_context else "(no product context found)"
     trend = state.get("trend_insights", "")
     memes = state.get("meme_references", [])
 
@@ -37,10 +66,21 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         "- Keep it concise — Instagram caption style (max 2200 chars).\n"
         "- Include 3-5 relevant hashtags.\n"
         "- Target audience: IT pros who code by day and pet cats by night.\n"
+        "- If product context contains a sarcastic legend, use it as the hook nucleus.\n"
         f"{rules_text}\n\n"
+        "Product context (authoritative, use this first):\n"
+        f"{product_context_text}\n\n"
         f"Current trend context:\n{trend}\n\n"
         f"Meme references:\n{chr(10).join(f'- {m}' for m in memes)}\n\n"
-        "Generate ONLY the post copy. No explanations."
+        "Return ONLY valid JSON with this exact schema:\n"
+        "{\n"
+        "  \"hook\": \"short sarcastic opener in German\",\n"
+        "  \"body\": \"main copy in German\",\n"
+        "  \"cta\": \"short CTA in German\",\n"
+        "  \"hashtags\": [\"#tag1\", \"#tag2\", \"#tag3\"],\n"
+        "  \"style_notes\": {\"sarcasm_level\": \"1-10\", \"used_product_legend\": true}\n"
+        "}\n"
+        "No markdown. No additional text."
     )
 
     messages = [SystemMessage(content=system_prompt), *state["messages"]]
@@ -70,14 +110,48 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         response = mw.after_model(response, state)
 
     content = response.content if hasattr(response, "content") else str(response)
-    hashtags = [w for w in content.split() if w.startswith("#")]
+    payload = _extract_json_payload(content)
+
+    if payload:
+        hook = str(payload.get("hook", "")).strip()
+        body = str(payload.get("body", "")).strip()
+        cta = str(payload.get("cta", "")).strip()
+        raw_hashtags = payload.get("hashtags", [])
+        hashtags = [
+            h if str(h).startswith("#") else f"#{h}"
+            for h in raw_hashtags
+            if str(h).strip()
+        ]
+        hashtags = hashtags[:5]
+
+        content = "\n\n".join(part for part in [hook, body, cta, " ".join(hashtags)] if part)
+        copy_validation = {
+            **getattr(response, "_validation", {}),
+            "structured_output": True,
+            "schema_version": "copywriter.v1",
+        }
+        structured_parts = {
+            "hook": hook,
+            "body": body,
+            "cta": cta,
+            "style_notes": payload.get("style_notes", {}),
+        }
+    else:
+        hashtags = [w for w in content.split() if w.startswith("#")]
+        copy_validation = {
+            **getattr(response, "_validation", {}),
+            "structured_output": False,
+            "schema_version": "copywriter.v1",
+        }
+        structured_parts = {}
 
     return {
         "draft_copy_de": content,
         "copy_metadata": {
             "hashtags": hashtags,
             "char_count": len(content),
-            "validation": getattr(response, "_validation", {}),
+            "validation": copy_validation,
+            "parts": structured_parts,
         },
         "approval_status": "pending",
         "_current_node": "copywriter",

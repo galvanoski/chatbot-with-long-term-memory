@@ -76,6 +76,7 @@ class GeekCatMiddleware(AgentMiddleware):
         ltm_context = state.get("ltm_context", [])
         brand_rules = state.get("brand_rules", {})
         product_skus = state.get("product_skus", [])
+        product_context = state.get("product_context", [])
 
         # Build context block
         context_parts = []
@@ -85,6 +86,11 @@ class GeekCatMiddleware(AgentMiddleware):
             context_parts.append("Brand rules:\n" + "\n".join(f"- {k}: {v}" for k, v in brand_rules.items()))
         if product_skus:
             context_parts.append("Selected products:\n" + "\n".join(f"- {sku}" for sku in product_skus[:5]))
+        if product_context:
+            context_parts.append(
+                "Product context snippets (use sarcastic legend as message core):\n"
+                + "\n\n".join(product_context[:3])
+            )
 
         # Inject into the first SystemMessage, or prepend one
         context_block = "\n\n".join(context_parts) if context_parts else ""

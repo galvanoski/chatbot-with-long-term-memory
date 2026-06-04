@@ -83,6 +83,14 @@ const debugState = computed(() => JSON.stringify({
     </div>
 
     <template v-if="currentThread">
+      <div
+        v-if="isLoading"
+        data-testid="chat-processing"
+        class="mx-4 mt-3 rounded-lg border border-default bg-muted/40 px-3 py-2 text-xs text-muted"
+      >
+        Thinking... Analyzing context and preparing response.
+      </div>
+
       <UChatMessages
         :key="chatId"
         data-testid="chat-messages"

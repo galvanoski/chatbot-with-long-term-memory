@@ -16,6 +16,23 @@ def research_node(state: AgentState) -> dict:
     products = query_product_catalog(user_message, top_k=3)
     memes = query_meme_repository(user_message, top_k=2)
 
+    product_context = []
+    for p in products:
+        metadata = p.get("metadata", {}) or {}
+        sku = metadata.get("sku", p.get("id", "unknown-sku"))
+        name = metadata.get("name", "Unnamed product")
+        sarcastic_legend = metadata.get("sarcastic_legend") or metadata.get("tagline") or ""
+        audience = metadata.get("audience", "IT pros and cat lovers")
+        category = metadata.get("category", "pod")
+        base_text = p.get("text", "")
+
+        snippet = (
+            f"SKU={sku} | NAME={name} | CATEGORY={category} | AUDIENCE={audience}\n"
+            f"SARCASTIC_LEGEND={sarcastic_legend}\n"
+            f"PRODUCT_NOTES={base_text}"
+        )
+        product_context.append(snippet)
+
     # Trend insights (could call an external trends API)
     trend_insights = (
         "Current IT trends: AI agents adoption, Rust ecosystem growth, "
@@ -25,6 +42,7 @@ def research_node(state: AgentState) -> dict:
 
     return {
         "product_skus": [p.get("metadata", {}).get("sku", p["id"]) for p in products],
+        "product_context": product_context,
         "trend_insights": trend_insights,
         "meme_references": [m["text"] for m in memes],
         "_current_node": "research",

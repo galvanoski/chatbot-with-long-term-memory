@@ -1,5 +1,53 @@
 import type { Thread, ThreadListItem, ThreadState, SendMessageResponse } from '#shared/types/thread'
 
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function streamAssistantText(
+  finalMessages: any[],
+  setMessages: (msgs: any[]) => void
+) {
+  const assistantIndex = [...finalMessages]
+    .map((m, idx) => ({ role: m.role, idx }))
+    .reverse()
+    .find(x => x.role === 'assistant')?.idx
+
+  if (assistantIndex === undefined) {
+    setMessages(finalMessages)
+    return
+  }
+
+  const assistant = finalMessages[assistantIndex]
+  const finalText = assistant?.parts?.[0]?.text ?? ''
+
+  if (!finalText) {
+    setMessages(finalMessages)
+    return
+  }
+
+  const working = finalMessages.map(m => ({ ...m }))
+  working[assistantIndex] = {
+    ...assistant,
+    parts: [{ type: 'text' as const, text: '' }]
+  }
+  setMessages([...working])
+
+  const chunks = Math.min(120, Math.max(20, Math.ceil(finalText.length / 10)))
+  const step = Math.max(1, Math.ceil(finalText.length / chunks))
+
+  for (let cursor = step; cursor <= finalText.length; cursor += step) {
+    working[assistantIndex] = {
+      ...assistant,
+      parts: [{ type: 'text' as const, text: finalText.slice(0, cursor) }]
+    }
+    setMessages([...working])
+    await sleep(18)
+  }
+
+  setMessages(finalMessages)
+}
+
 export function transformMessages(msgs: Thread['messages']): any[] {
   return (msgs ?? []).filter(Boolean).map(m => ({
     ...m,
@@ -69,6 +117,36 @@ export function useGeekCatChat() {
 
   async function sendMessage(text: string): Promise<boolean> {
     if (!currentThread.value) return false
+    const previousThreadMessages = [...currentThread.value.messages]
+    const previousUiMessages = [...messages.value]
+
+    const optimisticUserMessage = {
+      id: `temp-user-${Date.now()}`,
+      role: 'user' as const,
+      content: text,
+      created_at: new Date().toISOString()
+    }
+    const optimisticAssistantMessage = {
+      id: `temp-assistant-${Date.now()}`,
+      role: 'assistant' as const,
+      content: 'Analyzing your request...'
+    }
+
+    currentThread.value.messages = [...currentThread.value.messages, optimisticUserMessage]
+    messages.value = [
+      ...previousUiMessages,
+      {
+        ...optimisticUserMessage,
+        name: 'Du',
+        parts: [{ type: 'text' as const, text: text }]
+      },
+      {
+        ...optimisticAssistantMessage,
+        name: 'The Geek Cat',
+        parts: [{ type: 'text' as const, text: 'Analyzing your request...' }]
+      }
+    ]
+
     loading.value = true
     error.value = null
     try {
@@ -82,9 +160,14 @@ export function useGeekCatChat() {
       currentThread.value.messages = res.messages
       currentThread.value.status = res.status
       currentThread.value.pending_copy = res.pending_copy
-      messages.value = transformMessages(res.messages)
+      const finalUiMessages = transformMessages(res.messages)
+      await streamAssistantText(finalUiMessages, (next) => {
+        messages.value = next
+      })
       return true
     } catch (e: any) {
+      currentThread.value.messages = previousThreadMessages
+      messages.value = previousUiMessages
       error.value = e?.message ?? 'Failed to send message'
       return false
     } finally {

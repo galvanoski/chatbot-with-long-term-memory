@@ -15,6 +15,7 @@ class AgentState(TypedDict):
 
     # ── Research node output ──
     product_skus: list[str]
+    product_context: list[str]
     trend_insights: str
     meme_references: list[str]
 
