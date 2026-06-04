@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import json
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from langchain_core.messages import BaseMessage, SystemMessage
@@ -11,6 +12,10 @@ from backend.middleware.base import AgentMiddleware
 from backend.memory.manager import MemoryManager
 
 logger = logging.getLogger("geekcat.middleware")
+
+_request_start_time: ContextVar[float | None] = ContextVar("geekcat_start_time", default=None)
+_request_current_node: ContextVar[str] = ContextVar("geekcat_current_node", default="")
+_request_analytics: ContextVar[list[dict] | None] = ContextVar("geekcat_analytics", default=None)
 
 
 class GeekCatMiddleware(AgentMiddleware):
@@ -31,9 +36,6 @@ class GeekCatMiddleware(AgentMiddleware):
             "copywriter": "openai/gpt-5-mini",
             "publisher": "openai/gpt-4o-mini",
         }
-        self._start_time: float | None = None
-        self._current_node: str = ""
-        self._analytics: list[dict] = []
 
     # ──────────────────────────────────────────────
     # Hook 1: before_agent
@@ -54,9 +56,10 @@ class GeekCatMiddleware(AgentMiddleware):
         state["ltm_context"] = [m["text"] for m in ltm_context]
 
         # Init analytics
-        self._start_time = time.time()
-        self._analytics = [{"event": "agent_start", "timestamp": time.time()}]
-        state["_analytics_log"] = self._analytics
+        _request_start_time.set(time.time())
+        analytics = [{"event": "agent_start", "timestamp": time.time()}]
+        _request_analytics.set(analytics)
+        state["_analytics_log"] = analytics
 
         return state
 
@@ -116,10 +119,11 @@ class GeekCatMiddleware(AgentMiddleware):
         state: dict,
     ) -> Any:
         """Dynamic model selection per node, logging, retry with fallback."""
-        task = self._current_node or state.get("_current_node", "copywriter")
+        task = _request_current_node.get() or state.get("_current_node", "copywriter")
         model_name = self.llm_registry.get(task, "openai/gpt-5-mini")
 
         logger.info("wrap_model_call: task=%s model=%s", task, model_name)
+        _request_current_node.set(task)
 
         try:
             start = time.time()
@@ -132,13 +136,15 @@ class GeekCatMiddleware(AgentMiddleware):
                 usage = response.usage_metadata
                 logger.debug("tokens: %s", usage)
 
-            self._analytics.append({
+            analytics = _request_analytics.get() or []
+            analytics.append({
                 "event": "llm_call",
                 "task": task,
                 "model": model_name,
                 "elapsed_ms": round(elapsed * 1000),
                 "usage": usage,
             })
+            _request_analytics.set(analytics)
             return response
 
         except Exception as exc:
@@ -152,12 +158,14 @@ class GeekCatMiddleware(AgentMiddleware):
                     api_key=os.environ["OPENROUTER_API_KEY"],
                 )
                 response = fallback_llm.invoke(messages)
-                self._analytics.append({
+                analytics = _request_analytics.get() or []
+                analytics.append({
                     "event": "llm_call_fallback",
                     "task": task,
                     "model": "gpt-4o-mini",
                     "error": str(exc),
                 })
+                _request_analytics.set(analytics)
                 return response
             raise
 
@@ -180,22 +188,26 @@ class GeekCatMiddleware(AgentMiddleware):
 
         try:
             result = tool_func(**args)
-            self._analytics.append({
+            analytics = _request_analytics.get() or []
+            analytics.append({
                 "event": "tool_call",
                 "tool": tool_name,
                 "args": args,
                 "success": True,
             })
+            _request_analytics.set(analytics)
             return result
 
         except Exception as exc:
-            self._analytics.append({
+            analytics = _request_analytics.get() or []
+            analytics.append({
                 "event": "tool_call",
                 "tool": tool_name,
                 "args": args,
                 "success": False,
                 "error": str(exc),
             })
+            _request_analytics.set(analytics)
             raise
 
     # ──────────────────────────────────────────────
@@ -233,7 +245,7 @@ class GeekCatMiddleware(AgentMiddleware):
     # ──────────────────────────────────────────────
     def after_agent(self, state: dict, config: dict) -> dict:
         """Pre-compaction flush, save analytics, rebuild BM25, cleanup."""
-        elapsed = time.time() - (self._start_time or time.time())
+        elapsed = time.time() - (_request_start_time.get() or time.time())
         user_id = config["configurable"].get("user_id", "anonymous")
         messages = state.get("messages", [])
 
@@ -247,7 +259,7 @@ class GeekCatMiddleware(AgentMiddleware):
             "elapsed_seconds": round(elapsed, 2),
             "approval_status": str(state.get("approval_status") or ""),
             "product_skus": json.dumps(state.get("product_skus") or []),
-            "log": json.dumps(self._analytics),
+            "log": json.dumps(_request_analytics.get() or []),
         })
 
         # Rebuild BM25 index
@@ -256,5 +268,8 @@ class GeekCatMiddleware(AgentMiddleware):
         # Strip temp fields before returning
         state.pop("_analytics_log", None)
         state.pop("ltm_context", None)
+        _request_start_time.set(None)
+        _request_current_node.set("")
+        _request_analytics.set(None)
 
         return state

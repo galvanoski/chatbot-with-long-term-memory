@@ -3,8 +3,9 @@
  */
 export function getUserId(event: any): string {
   const anonIdPattern = /^anon_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+  const legacyAnonIdPattern = /^anon_[0-9]{13}_[a-z0-9]{8}$/i
   const cookie = getCookie(event, 'geekcat_user_id')
-  if (cookie && anonIdPattern.test(cookie)) {
+  if (cookie && (anonIdPattern.test(cookie) || legacyAnonIdPattern.test(cookie))) {
     return cookie
   }
 

@@ -257,6 +257,33 @@ def test_thread_survives_cache_reset_integration():
     assert payload["pending_copy"]["content"].startswith("Borrador para:")
 
 
+def test_legacy_single_owner_threads_migrate_to_current_anonymous_user():
+    client = _build_test_client()
+
+    legacy_user_id = "anon_1780484373330_toiwdc9f"
+    create = client.post("/api/chat/threads", json={"user_id": legacy_user_id})
+    assert create.status_code == 200
+    thread_id = create.json()["id"]
+
+    client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={"user_id": legacy_user_id, "content": "Necesito copy legacy"},
+    )
+
+    new_user_id = "anon_12345678-1234-4234-8234-1234567890ab"
+    list_response = client.get("/api/chat/threads", params={"user_id": new_user_id})
+    assert list_response.status_code == 200
+    threads = list_response.json()
+    assert len(threads) == 1
+    assert threads[0]["id"] == thread_id
+
+    fetch = client.get(f"/api/chat/threads/{thread_id}", params={"user_id": new_user_id})
+    assert fetch.status_code == 200
+    payload = fetch.json()
+    assert payload["id"] == thread_id
+    assert payload["messages"]
+
+
 def test_reject_saves_human_feedback_event():
     client = _build_test_client()
 

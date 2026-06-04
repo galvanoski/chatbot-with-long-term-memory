@@ -21,6 +21,7 @@ def _get_checkpoint_saver() -> SqliteSaver:
         checkpoint_path = Path(__file__).resolve().parents[2] / "threads.db"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         _checkpoint_conn = sqlite3.connect(checkpoint_path, check_same_thread=False)
+        _checkpoint_conn.execute("PRAGMA journal_mode=WAL")
     return SqliteSaver(_checkpoint_conn)
 
 
