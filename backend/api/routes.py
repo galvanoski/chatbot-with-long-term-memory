@@ -1,4 +1,5 @@
 import datetime as dt
+import asyncio
 import logging
 import json
 import sqlite3
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
@@ -17,6 +19,7 @@ from backend.api.schemas import (
     BrandRuleResponse,
     BrandRuleSaveRequest,
     BrandRuleSaveResponse,
+    DeleteThreadResponse,
     DeleteMemoryResponse,
     MemoryItem,
     MemoryListResponse,
@@ -85,6 +88,12 @@ def _get_thread_db_conn() -> sqlite3.Connection:
                 )
                 """
             )
+            _thread_db_conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS chat_threads_fts
+                USING fts5(thread_id UNINDEXED, user_id UNINDEXED, title, content)
+                """
+            )
             existing_columns = {
                 row[1]
                 for row in _thread_db_conn.execute("PRAGMA table_info(chat_threads)").fetchall()
@@ -93,12 +102,42 @@ def _get_thread_db_conn() -> sqlite3.Connection:
                 _thread_db_conn.execute(
                     "ALTER TABLE chat_threads ADD COLUMN messages_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            _thread_db_conn.execute("DELETE FROM chat_threads_fts")
+            _thread_db_conn.execute(
+                """
+                INSERT INTO chat_threads_fts(thread_id, user_id, title, content)
+                SELECT id, user_id, COALESCE(title, ''), COALESCE(messages_json, '[]')
+                FROM chat_threads
+                """
+            )
             _thread_db_conn.commit()
         return _thread_db_conn
 
 
 def _serialize_messages(messages: list[dict] | None) -> str:
     return json.dumps(messages or [], ensure_ascii=False)
+
+
+def _messages_to_fts_text(messages: list[dict] | None) -> str:
+    if not messages:
+        return ""
+    chunks: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            chunks.append(content)
+    return "\n".join(chunks)
+
+
+def _to_fts_query(text: str) -> str:
+    tokens = [token for token in re.split(r"\s+", text.strip()) if token]
+    if not tokens:
+        return ""
+    safe_tokens = [re.sub(r'[^\w\-]', '', token) for token in tokens]
+    safe_tokens = [token for token in safe_tokens if token]
+    return " AND ".join(f'"{token}"*' for token in safe_tokens)
 
 
 def _deserialize_messages(raw: str | None) -> list[dict]:
@@ -133,6 +172,7 @@ def _thread_cache_update(thread_id: str, updates: dict) -> dict:
 
 def _save_thread_record(thread: dict) -> None:
     conn = _get_thread_db_conn()
+    messages = thread.get("messages", [])
     conn.execute(
         """
         INSERT INTO chat_threads (id, user_id, title, status, created_at, updated_at, messages_json)
@@ -152,7 +192,20 @@ def _save_thread_record(thread: dict) -> None:
             thread.get("status", "active"),
             thread["created_at"],
             thread["updated_at"],
-            _serialize_messages(thread.get("messages", [])),
+            _serialize_messages(messages),
+        ),
+    )
+    conn.execute("DELETE FROM chat_threads_fts WHERE thread_id = ?", (thread["id"],))
+    conn.execute(
+        """
+        INSERT INTO chat_threads_fts(thread_id, user_id, title, content)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            thread["id"],
+            thread["user_id"],
+            str(thread.get("title") or ""),
+            _messages_to_fts_text(messages),
         ),
     )
     conn.commit()
@@ -185,17 +238,33 @@ def _load_thread_record(thread_id: str, user_id: str | None = None) -> dict | No
     }
 
 
-def _list_thread_records(user_id: str) -> list[dict]:
+def _list_thread_records(user_id: str, query: str | None = None) -> list[dict]:
     conn = _get_thread_db_conn()
-    rows = conn.execute(
-        """
-        SELECT id, user_id, title, status, created_at, updated_at, messages_json
-        FROM chat_threads
-        WHERE user_id = ?
-        ORDER BY updated_at DESC
-        """,
-        (user_id,),
-    ).fetchall()
+    q = (query or "").strip()
+    if q:
+        fts_query = _to_fts_query(q)
+        if not fts_query:
+            return []
+        rows = conn.execute(
+            """
+            SELECT ct.id, ct.user_id, ct.title, ct.status, ct.created_at, ct.updated_at, ct.messages_json
+            FROM chat_threads AS ct
+            JOIN chat_threads_fts AS fts ON fts.thread_id = ct.id
+            WHERE ct.user_id = ? AND fts.user_id = ? AND chat_threads_fts MATCH ?
+            ORDER BY bm25(chat_threads_fts), ct.updated_at DESC
+            """,
+            (user_id, user_id, fts_query),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, title, status, created_at, updated_at, messages_json
+            FROM chat_threads
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
     return [
         {
             "id": row["id"],
@@ -224,6 +293,10 @@ def _migrate_single_owner_threads_to_user_id(user_id: str) -> bool:
         "UPDATE chat_threads SET user_id = ? WHERE user_id = ?",
         (user_id, source_user_id),
     )
+    conn.execute(
+        "UPDATE chat_threads_fts SET user_id = ? WHERE user_id = ?",
+        (user_id, source_user_id),
+    )
     conn.commit()
 
     with _threads_lock:
@@ -235,6 +308,55 @@ def _migrate_single_owner_threads_to_user_id(user_id: str) -> bool:
 
     logger.info("migrated chat threads from %s to %s", source_user_id, user_id)
     return True
+
+
+def _delete_thread_record(thread_id: str, user_id: str) -> bool:
+    conn = _get_thread_db_conn()
+    row = conn.execute(
+        "SELECT id FROM chat_threads WHERE id = ? AND user_id = ?",
+        (thread_id, user_id),
+    ).fetchone()
+    if row is None:
+        return False
+    conn.execute("DELETE FROM chat_threads WHERE id = ? AND user_id = ?", (thread_id, user_id))
+    conn.execute("DELETE FROM chat_threads_fts WHERE thread_id = ? AND user_id = ?", (thread_id, user_id))
+    conn.commit()
+    with _threads_lock:
+        _threads.pop(thread_id, None)
+    return True
+
+
+def _encode_sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _sse_send_message(thread_id: str, body: MessageSendRequest):
+    try:
+        payload = _send_message_impl(thread_id, body)
+        yield _encode_sse("start", {
+            "status": payload.get("status"),
+            "title": payload.get("title"),
+            "pending_copy": payload.get("pending_copy"),
+        })
+
+        assistant_text = ""
+        for message in payload.get("messages", []):
+            if message.get("role") == "assistant":
+                assistant_text = str(message.get("content") or "")
+
+        if assistant_text:
+            chunk_size = 24
+            for i in range(0, len(assistant_text), chunk_size):
+                chunk = assistant_text[i:i + chunk_size]
+                yield _encode_sse("delta", {"text": chunk})
+                await asyncio.sleep(0.01)
+
+        yield _encode_sse("done", payload)
+    except HTTPException as exc:
+        yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+    except Exception as exc:
+        logger.exception("stream send_message failed")
+        yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
 def _extract_messages(state_values: dict) -> list[dict]:
@@ -425,11 +547,11 @@ def init_routes(
 # ── Chat Threads ──
 
 @router.get("/chat/threads", response_model=list[ThreadListItemResponse])
-def list_threads(user_id: str):
+def list_threads(user_id: str, q: str = ""):
     """List all chat threads for a user."""
-    records = _list_thread_records(user_id)
+    records = _list_thread_records(user_id, q)
     if not records and _migrate_single_owner_threads_to_user_id(user_id):
-        records = _list_thread_records(user_id)
+        records = _list_thread_records(user_id, q)
 
     for record in records:
         cached = _thread_cache_get(record["id"])
@@ -545,6 +667,28 @@ def send_message(thread_id: str, body: MessageSendRequest):
         import traceback
         logger.error("send_message unhandled error: %s\n%s", exc, traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+@router.post("/chat/threads/{thread_id}/messages/stream")
+def send_message_stream(thread_id: str, body: MessageSendRequest):
+    if not _graph or not _middleware:
+        raise HTTPException(status_code=503, detail="Graph not initialised")
+
+    return StreamingResponse(
+        _sse_send_message(thread_id, body),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.delete("/chat/threads/{thread_id}", response_model=DeleteThreadResponse)
+def delete_thread(thread_id: str, user_id: str):
+    deleted = _delete_thread_record(thread_id, user_id)
+    if not deleted and _migrate_single_owner_threads_to_user_id(user_id):
+        deleted = _delete_thread_record(thread_id, user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"status": "deleted", "thread_id": thread_id}
 
 
 def _send_message_impl(thread_id: str, body: MessageSendRequest):

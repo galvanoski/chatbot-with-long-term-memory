@@ -20,11 +20,7 @@ export const pendingCopySchema = z.object({
   product_name: z.string().nullish(),
   product_url: z.string().nullish(),
   sources: z.array(threadSourceSchema).default([]),
-  parts: z.object({
-    hook: z.string().optional(),
-    body: z.string().optional(),
-    cta: z.string().optional()
-  }).optional()
+  parts: z.record(z.string(), z.unknown()).optional()
 })
 
 export const threadListItemSchema = z.object({
@@ -44,20 +40,20 @@ export const threadDetailSchema = z.object({
   updated_at: z.string(),
   status: z.enum(['active', 'awaiting_approval', 'published']),
   messages: z.array(threadMessageSchema),
-  pending_copy: pendingCopySchema.optional()
+  pending_copy: pendingCopySchema.nullish()
 })
 
 export const threadStateSchema = z.object({
   status: z.enum(['active', 'awaiting_approval', 'published']),
   messages: z.array(threadMessageSchema),
-  pending_copy: pendingCopySchema.optional()
+  pending_copy: pendingCopySchema.nullish()
 })
 
 export const threadActionResponseSchema = z.object({
   title: z.string().nullable().optional(),
   status: z.enum(['active', 'awaiting_approval', 'published']),
   messages: z.array(threadMessageSchema),
-  pending_copy: pendingCopySchema.optional()
+  pending_copy: pendingCopySchema.nullish()
 })
 
 export const threadListResponseSchema = z.array(threadListItemSchema)

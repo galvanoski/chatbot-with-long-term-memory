@@ -29,19 +29,15 @@ export interface Thread {
   pending_copy?: {
     content: string
     hashtags: string[]
-    product_name?: string
-    product_url?: string
+    product_name?: string | null
+    product_url?: string | null
     sources?: Array<{
       label: string
       url?: string
       type?: string
     }>
-    parts?: {
-      hook?: string
-      body?: string
-      cta?: string
-    }
-  }
+    parts?: Record<string, unknown>
+  } | null
 }
 
 export interface ThreadListItem {
@@ -58,19 +54,15 @@ export interface ThreadState {
   pending_copy?: {
     content: string
     hashtags: string[]
-    product_name?: string
-    product_url?: string
+    product_name?: string | null
+    product_url?: string | null
     sources?: Array<{
       label: string
       url?: string
       type?: string
     }>
-    parts?: {
-      hook?: string
-      body?: string
-      cta?: string
-    }
-  }
+    parts?: Record<string, unknown>
+  } | null
   messages: Message[]
 }
 
@@ -81,17 +73,13 @@ export interface SendMessageResponse {
   pending_copy?: {
     content: string
     hashtags: string[]
-    product_name?: string
-    product_url?: string
+    product_name?: string | null
+    product_url?: string | null
     sources?: Array<{
       label: string
       url?: string
       type?: string
     }>
-    parts?: {
-      hook?: string
-      body?: string
-      cta?: string
-    }
-  }
+    parts?: Record<string, unknown>
+  } | null
 }

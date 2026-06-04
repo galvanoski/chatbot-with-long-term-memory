@@ -172,3 +172,8 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     checks: dict[str, bool]
+
+
+class DeleteThreadResponse(BaseModel):
+    status: str
+    thread_id: str

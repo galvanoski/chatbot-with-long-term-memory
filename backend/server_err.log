@@ -11,3 +11,5 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 2026-06-04 14:49:59,576 [INFO] geekcat.api: migrated chat threads from anon_c2b6ca32-0694-4be9-a50d-d7126cdbf2ab to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
 2026-06-04 14:51:39,227 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_bd41caf6-32cc-42be-ab34-10af95fbac2c
 2026-06-04 14:51:40,044 [INFO] geekcat.api: migrated chat threads from anon_bd41caf6-32cc-42be-ab34-10af95fbac2c to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
+2026-06-04 15:01:58,041 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_e1010940-06ad-4802-bf9c-13c0df6728ab
+2026-06-04 15:02:03,447 [INFO] geekcat.api: migrated chat threads from anon_e1010940-06ad-4802-bf9c-13c0df6728ab to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c

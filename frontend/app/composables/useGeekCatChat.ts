@@ -19,6 +19,53 @@ function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+type StreamEventName = 'start' | 'delta' | 'done' | 'error'
+
+async function consumeSSEStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: StreamEventName, payload: unknown) => void | Promise<void>
+) {
+  const decoder = new TextDecoder()
+  const reader = body.getReader()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    while (buffer.includes('\n\n')) {
+      const boundary = buffer.indexOf('\n\n')
+      const frame = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      if (!frame.trim()) continue
+
+      let event: StreamEventName = 'delta'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) {
+          const nextEvent = line.slice(6).trim() as StreamEventName
+          event = nextEvent
+          continue
+        }
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim())
+        }
+      }
+
+      const dataRaw = dataLines.join('\n')
+      let payload: unknown = dataRaw
+      try {
+        payload = JSON.parse(dataRaw)
+      } catch {
+        payload = dataRaw
+      }
+
+      await onEvent(event, payload)
+    }
+  }
+}
+
 async function streamAssistantText(
   finalMessages: UIMessage[],
   setMessages: (msgs: UIMessage[]) => void,
@@ -129,11 +176,31 @@ export function useGeekCatChat() {
     animationController.value = null
   }
 
-  async function fetchThreads() {
+  async function fetchThreads(query = '') {
     try {
-      threads.value = parseValidatedResponse(threadListResponseSchema, await $fetch('/api/threads'), 'Thread list')
+      const q = query.trim()
+      threads.value = parseValidatedResponse(
+        threadListResponseSchema,
+        await $fetch('/api/threads', { params: q ? { q } : undefined }),
+        'Thread list'
+      )
     } catch (errorValue: unknown) {
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to load threads'
+    }
+  }
+
+  async function deleteThread(threadId: string): Promise<boolean> {
+    try {
+      await $fetch(`/api/threads/${threadId}`, { method: 'DELETE' })
+      threads.value = threads.value.filter(thread => thread.id !== threadId)
+      if (currentThread.value?.id === threadId) {
+        currentThread.value = null
+        messages.value = []
+      }
+      return true
+    } catch (errorValue: unknown) {
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to delete thread'
+      return false
     }
   }
 
@@ -192,26 +259,71 @@ export function useGeekCatChat() {
     sending.value = true
     error.value = null
     try {
-      const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
-        `/api/threads/${currentThread.value.id}/messages`,
-        {
-          method: 'POST',
-          body: { message: text }
-        }
-      ), 'Send message response')
-      currentThread.value.messages = res.messages
-      if (res.title) {
-        currentThread.value.title = res.title
-      }
-      currentThread.value.status = res.status
-      currentThread.value.pending_copy = res.pending_copy
-      currentThread.value.updated_at = new Date().toISOString()
+      const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/messages/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      })
 
-      upsertThreadListItem(currentThread.value)
-      const finalUiMessages = transformMessages(res.messages)
-      await streamAssistantText(finalUiMessages, (next) => {
-        messages.value = next
-      }, controller.signal)
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('Streaming endpoint unavailable')
+      }
+
+      const assistantStreamId = `temp-assistant-${Date.now()}`
+      messages.value = [
+        ...messages.value,
+        {
+          id: assistantStreamId,
+          role: 'assistant',
+          name: 'The Geek Cat',
+          content: '',
+          created_at: new Date().toISOString(),
+          parts: [{ type: 'text' as const, text: '' }]
+        }
+      ]
+
+      await consumeSSEStream(streamResponse.body, async (event, payload) => {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
+          const delta = String((payload as { text?: unknown }).text ?? '')
+          messages.value = messages.value.map(message => {
+            if (message.id !== assistantStreamId) return message
+            const currentText = message.parts?.[0]?.text ?? ''
+            const nextText = `${currentText}${delta}`
+            return {
+              ...message,
+              content: nextText,
+              parts: [{ type: 'text' as const, text: nextText }]
+            }
+          })
+          return
+        }
+
+        if (event === 'done' && payload && typeof payload === 'object') {
+          const res = parseValidatedResponse(threadActionResponseSchema, payload, 'Send message response')
+          currentThread.value!.messages = res.messages
+          currentThread.value!.title = res.title ?? currentThread.value!.title
+          currentThread.value!.status = res.status
+          currentThread.value!.pending_copy = res.pending_copy
+          currentThread.value!.updated_at = new Date().toISOString()
+          upsertThreadListItem(currentThread.value!)
+
+          const finalUiMessages = transformMessages(res.messages)
+          messages.value = finalUiMessages
+          return
+        }
+
+        if (event === 'error') {
+          const detail = typeof payload === 'object' && payload && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Streaming failed')
+            : 'Streaming failed'
+          throw new Error(detail)
+        }
+      })
+
       return true
     } catch (errorValue: unknown) {
       currentThread.value.messages = previousThreadMessages
@@ -351,6 +463,7 @@ export function useGeekCatChat() {
     isAwaitingApproval,
     pendingCopy,
     fetchThreads,
+    deleteThread,
     createThread,
     loadThread,
     sendMessage,

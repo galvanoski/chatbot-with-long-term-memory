@@ -120,11 +120,16 @@ function messageText(message: { parts?: Array<{ text?: string }>; content?: stri
   return message?.parts?.[0]?.text || message?.content || ''
 }
 
+function readDraftPart(parts: Record<string, unknown> | undefined, key: 'hook' | 'body' | 'cta') {
+  const value = parts?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
 function useGeneratedDraft() {
   if (!pending.value) return
-  editableHook.value = pending.value.parts?.hook ?? ''
-  editableBody.value = pending.value.parts?.body ?? pending.value.content ?? ''
-  editableCta.value = pending.value.parts?.cta ?? ''
+  editableHook.value = readDraftPart(pending.value.parts, 'hook')
+  editableBody.value = readDraftPart(pending.value.parts, 'body') || pending.value.content || ''
+  editableCta.value = readDraftPart(pending.value.parts, 'cta')
 }
 
 function getDraftPreview() {
@@ -150,11 +155,11 @@ watch(pending, (next) => {
     return
   }
 
-  editableHook.value = next.parts?.hook ?? ''
-  editableBody.value = next.parts?.body ?? ''
-  editableCta.value = next.parts?.cta ?? ''
+  editableHook.value = readDraftPart(next.parts, 'hook')
+  editableBody.value = readDraftPart(next.parts, 'body')
+  editableCta.value = readDraftPart(next.parts, 'cta')
 
-  if (!next.parts?.hook && !next.parts?.body && !next.parts?.cta && next.content) {
+  if (!editableHook.value && !editableBody.value && !editableCta.value && next.content) {
     const lines = next.content.split('\n').filter(Boolean)
     editableHook.value = lines[0] ?? ''
     editableBody.value = lines.slice(1).join('\n').trim()

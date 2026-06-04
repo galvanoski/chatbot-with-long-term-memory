@@ -90,12 +90,26 @@ html.dark .shiki span {
   padding: 0.25rem 0.55rem;
 }
 
+.left-search-wrap {
+  padding: 0.25rem 0.45rem 0.4rem;
+}
+
+.left-search-input {
+  width: 100%;
+}
+
 .left-recents {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
   padding-right: 0.15rem;
+}
+
+.left-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
 }
 
 .left-recent-item {
@@ -106,6 +120,16 @@ html.dark .shiki span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+
+.left-recent-delete {
+  opacity: 0;
+}
+
+.left-recent-row:hover .left-recent-delete,
+.left-recent-item-active + .left-recent-delete {
+  opacity: 1;
 }
 
 .left-recent-item:hover {
