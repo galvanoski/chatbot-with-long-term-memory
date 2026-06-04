@@ -17,6 +17,8 @@ class MessageSendRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     user_id: str
     feedback: Optional[str] = None
+    edited_copy: Optional[str] = None
+    edited_parts: Optional[dict[str, str]] = None
 
 
 class BrandRuleSaveRequest(BaseModel):
@@ -68,6 +70,16 @@ class ProductSearchResult(BaseModel):
     text: str
     score: float
     metadata: Optional[dict] = None
+
+
+class ProductCatalogItem(BaseModel):
+    id: Optional[str] = None
+    text: str
+    metadata: dict[str, Any]
+
+
+class ProductCatalogBulkLoadRequest(BaseModel):
+    items: list[ProductCatalogItem]
 
 
 class ErrorResponse(BaseModel):

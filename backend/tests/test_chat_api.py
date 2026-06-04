@@ -41,7 +41,7 @@ class _FakeGraph:
         if initial_state is None:
             state["approval_status"] = "approved"
             state["messages"].append(
-                SimpleNamespace(type="ai", content="Publicado correctamente")
+                SimpleNamespace(type="ai", content=state.get("draft_copy_de") or "Publicado correctamente")
             )
             return state
 
@@ -91,6 +91,18 @@ class _FakeGraph:
         state.update(updates)
 
 
+class _FakeMemory:
+    def __init__(self):
+        self.events: list[dict] = []
+
+    def save_analytics(self, user_id: str, event_type: str, payload: dict | None = None):
+        self.events.append({
+            "user_id": user_id,
+            "event_type": event_type,
+            "payload": payload or {}
+        })
+
+
 def _build_test_client() -> TestClient:
     routes._threads.clear()
     temp_db = tempfile.NamedTemporaryFile(suffix='-threads.db', delete=False)
@@ -98,7 +110,7 @@ def _build_test_client() -> TestClient:
     routes._set_thread_db_path(Path(temp_db.name))
     routes._graph = _FakeGraph()
     routes._middleware = _FakeMiddleware()
-    routes._memory = None
+    routes._memory = _FakeMemory()
 
     app = FastAPI()
     app.include_router(routes.router)
@@ -120,6 +132,21 @@ def test_extract_messages_maps_roles_and_content_unit():
     assert result[0]["content"] == "Hola"
     assert result[1]["role"] == "assistant"
     assert result[1]["content"] == "Respuesta"
+
+
+def test_derive_thread_title_from_messages_summarizes_progression_unit():
+    messages = [
+        {"role": "user", "content": "Necesito copy para camiseta Bitcoin"},
+        {"role": "assistant", "content": "Borrador..."},
+        {"role": "user", "content": "ajusta el tono para LinkedIn"},
+    ]
+
+    title = routes._derive_thread_title_from_messages(messages)
+    lower_title = title.lower()
+
+    assert "copy para camiseta bitcoin" in lower_title
+    assert "ajusta el tono para linkedin" in lower_title
+    assert "|" in title
 
 
 def test_chat_thread_lifecycle_integration():
@@ -151,6 +178,62 @@ def test_chat_thread_lifecycle_integration():
     assert fetched_thread["pending_copy"]["hashtags"] == ["#geekcat", "#marketing"]
 
 
+def test_approve_with_edited_parts_integration():
+    client = _build_test_client()
+
+    create = client.post("/api/chat/threads", json={"user_id": "u_test"})
+    thread_id = create.json()["id"]
+
+    client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={"user_id": "u_test", "content": "Genera copy para hoodie"},
+    )
+
+    approve = client.post(
+        f"/api/chat/threads/{thread_id}/approve",
+        json={
+            "user_id": "u_test",
+            "edited_parts": {
+                "hook": "Debug first, panic later.",
+                "body": "Dieser Hoodie ist stabiler als dein letzter Deploy.",
+                "cta": "Hol ihn dir, bevor die Logs dich holen."
+            },
+            "edited_copy": "Debug first, panic later.\n\nDieser Hoodie ist stabiler als dein letzter Deploy.\n\nHol ihn dir, bevor die Logs dich holen."
+        },
+    )
+    assert approve.status_code == 200
+    payload = approve.json()
+    assert payload["status"] == "published"
+    assert any("Debug first" in m["content"] for m in payload["messages"])
+    events = routes._memory.events
+    assert any(e["event_type"] == "human_feedback" and e["payload"].get("rating") == "up" for e in events)
+
+
+def test_catalog_bulk_load_endpoint_integration(monkeypatch):
+    client = _build_test_client()
+
+    monkeypatch.setattr(routes, "load_products_to_catalog", lambda items: len(items))
+
+    res = client.post(
+        "/api/catalog/products/bulk",
+        json={
+            "items": [
+                {
+                    "id": "sku-1",
+                    "text": "Produkt mit sarkastischer Legende",
+                    "metadata": {
+                        "sku": "SKU-1",
+                        "name": "HODL TIGHT Hoodie",
+                        "sarcastic_legend": "Stable hoodie, unstable market."
+                    }
+                }
+            ]
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["loaded"] == 1
+
+
 def test_thread_survives_cache_reset_integration():
     client = _build_test_client()
 
@@ -172,6 +255,31 @@ def test_thread_survives_cache_reset_integration():
     assert payload["status"] == "awaiting_approval"
     assert any(m["role"] == "assistant" for m in payload["messages"])
     assert payload["pending_copy"]["content"].startswith("Borrador para:")
+
+
+def test_reject_saves_human_feedback_event():
+    client = _build_test_client()
+
+    create = client.post("/api/chat/threads", json={"user_id": "u_test"})
+    thread_id = create.json()["id"]
+
+    client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={"user_id": "u_test", "content": "Genera copy para camiseta"},
+    )
+
+    reject = client.post(
+        f"/api/chat/threads/{thread_id}/reject",
+        json={"user_id": "u_test", "feedback": "too generic"},
+    )
+    assert reject.status_code == 200
+    events = routes._memory.events
+    assert any(
+        e["event_type"] == "human_feedback"
+        and e["payload"].get("rating") == "down"
+        and e["payload"].get("feedback") == "too generic"
+        for e in events
+    )
 
 
 def test_approve_flow_updates_status_integration():

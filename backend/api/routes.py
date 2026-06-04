@@ -16,8 +16,10 @@ from backend.api.schemas import (
     MemoryItem,
     MemoryListResponse,
     MessageSendRequest,
+    ProductCatalogBulkLoadRequest,
     ThreadCreateRequest,
 )
+from backend.graph.tools.rag import load_products_to_catalog
 from backend.memory.manager import MemoryManager
 from backend.middleware.geekcat import GeekCatMiddleware
 
@@ -159,6 +161,56 @@ def _extract_messages(state_values: dict) -> list[dict]:
     return msgs
 
 
+def _compose_copy_from_parts(parts: dict[str, str], hashtags: list[str] | None = None) -> str:
+    hook = (parts.get("hook") or "").strip()
+    body = (parts.get("body") or "").strip()
+    cta = (parts.get("cta") or "").strip()
+    blocks = [segment for segment in [hook, body, cta] if segment]
+    hashtags_line = " ".join([h if str(h).startswith("#") else f"#{h}" for h in (hashtags or [])]).strip()
+    if hashtags_line:
+        blocks.append(hashtags_line)
+    return "\n\n".join(blocks)
+
+
+def _sanitize_title_seed(text: str) -> str:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return ""
+
+    lower = cleaned.lower()
+    for prefix in (
+        "necesito ", "quiero ", "genera ", "genera un ", "genera una ", "crea ",
+        "haz ", "escribe ", "promote ", "erstelle ", "schreib ", "write ", "create ",
+    ):
+        if lower.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+
+    cleaned = cleaned.strip(" .,:;-")
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else ""
+
+
+def _derive_thread_title_from_messages(messages: list[dict], max_len: int = 72) -> str:
+    user_texts: list[str] = []
+    for msg in messages or []:
+        if msg.get("role") != "user":
+            continue
+        content = _sanitize_title_seed(str(msg.get("content") or ""))
+        if content:
+            user_texts.append(content)
+
+    if not user_texts:
+        return "Konversation"
+
+    first = user_texts[0]
+    last = user_texts[-1]
+    base = first if first.lower() == last.lower() else f"{first} | {last}"
+
+    if len(base) <= max_len:
+        return base
+    return base[: max_len - 1].rstrip() + "..."
+
+
 def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dict:
     """Return a frontend-ready thread payload from stored thread and graph state."""
     values = state_values or {}
@@ -193,6 +245,7 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
             "hashtags": metadata.get("hashtags", []),
             "product_name": metadata.get("product_name"),
             "product_url": metadata.get("product_url"),
+            "parts": metadata.get("parts", {}),
         }
 
     return {
@@ -227,7 +280,31 @@ def list_threads(user_id: str):
         if cached:
             record["messages"] = cached.get("messages", [])
             record["status"] = cached.get("status", record["status"])
+            record["title"] = cached.get("title") or record["title"]
             record["updated_at"] = cached.get("updated_at", record["updated_at"])
+
+        if not record.get("title"):
+            derived_messages = record.get("messages", [])
+            if not derived_messages and _graph:
+                try:
+                    state = _graph.get_state({"configurable": {"thread_id": record["id"]}})
+                    if state and state.values:
+                        derived_messages = _extract_messages(state.values)
+                        record["messages"] = derived_messages
+                except Exception:
+                    derived_messages = []
+
+            if derived_messages:
+                record["title"] = _derive_thread_title_from_messages(derived_messages)
+                record["updated_at"] = dt.datetime.utcnow().isoformat()
+                _save_thread_record(record)
+
+        if not record.get("title"):
+            record["title"] = "Konversation"
+
+        if record["id"] in _threads:
+            _threads[record["id"]]["title"] = record["title"]
+    records.sort(key=lambda thread: thread.get("updated_at") or "", reverse=True)
     return [
         {
             "id": t["id"],
@@ -275,17 +352,25 @@ def get_thread(thread_id: str, user_id: str = ""):
             state = _graph.get_state(config)
             if state and state.values:
                 payload = _build_thread_payload(thread, state.values)
+                payload_title = _derive_thread_title_from_messages(payload.get("messages", []))
                 if thread_id in _threads:
                     _threads[thread_id].update({
+                        "title": payload_title,
                         "status": payload["status"],
                         "messages": payload["messages"],
                         "updated_at": dt.datetime.utcnow().isoformat(),
                     })
                     _save_thread_record(_threads[thread_id])
+                payload["title"] = payload_title
                 return payload
         except Exception:
             pass
-    return _build_thread_payload(thread)
+    payload = _build_thread_payload(thread)
+    payload_title = _derive_thread_title_from_messages(payload.get("messages", []))
+    _threads[thread_id]["title"] = payload_title
+    _save_thread_record(_threads[thread_id])
+    payload["title"] = payload_title
+    return payload
 
 
 @router.post("/chat/threads/{thread_id}/messages")
@@ -358,16 +443,19 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
         "messages": [],
     }
     _threads[thread_id] = existing_thread
+
     payload = _build_thread_payload(existing_thread, snap_values)
 
     # Update in-memory thread store
     now = dt.datetime.utcnow().isoformat()
     _threads[thread_id]["messages"] = payload["messages"]
     _threads[thread_id]["status"] = payload["status"]
+    _threads[thread_id]["title"] = _derive_thread_title_from_messages(payload["messages"])
     _threads[thread_id]["updated_at"] = now
     _save_thread_record(_threads[thread_id])
 
     return {
+        "title": _threads[thread_id]["title"],
         "status": payload["status"],
         "messages": payload["messages"],
         "pending_copy": payload["pending_copy"],
@@ -403,6 +491,28 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
 
     config = {"configurable": {"thread_id": thread_id}}
 
+    if body.edited_parts or body.edited_copy:
+        state_snapshot = _graph.get_state(config)
+        values = state_snapshot.values if state_snapshot else {}
+        copy_metadata = dict(values.get("copy_metadata") or {})
+        hashtags = copy_metadata.get("hashtags", [])
+
+        edited_parts = body.edited_parts or {}
+        next_copy = body.edited_copy or _compose_copy_from_parts(edited_parts, hashtags)
+
+        if edited_parts:
+            copy_metadata["parts"] = {
+                "hook": edited_parts.get("hook", ""),
+                "body": edited_parts.get("body", ""),
+                "cta": edited_parts.get("cta", ""),
+            }
+        copy_metadata["char_count"] = len(next_copy)
+
+        _graph.update_state(config, {
+            "draft_copy_de": next_copy,
+            "copy_metadata": copy_metadata,
+        })
+
     # Update state with approval
     _graph.update_state(config, {"approval_status": "approved"})
 
@@ -424,13 +534,24 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
         "messages": [],
     }
     _threads[thread_id] = thread
+    if not messages:
+        messages = _threads[thread_id].get("messages", [])
 
     # Update thread store
     now = dt.datetime.utcnow().isoformat()
     _threads[thread_id]["status"] = "published"
     _threads[thread_id]["messages"] = messages
+    _threads[thread_id]["title"] = _derive_thread_title_from_messages(messages)
     _threads[thread_id]["updated_at"] = now
     _save_thread_record(_threads[thread_id])
+
+    if _memory:
+        _memory.save_analytics(body.user_id, "human_feedback", {
+            "thread_id": thread_id,
+            "rating": "up",
+            "feedback": body.feedback or "thumbs_up",
+            "edited": bool(body.edited_copy or body.edited_parts),
+        })
 
     return {"status": "published", "messages": messages}
 
@@ -462,8 +583,16 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
     # Update thread store
     now = dt.datetime.utcnow().isoformat()
     _threads[thread_id]["status"] = "active"
+    _threads[thread_id]["title"] = _derive_thread_title_from_messages(_threads[thread_id].get("messages", []))
     _threads[thread_id]["updated_at"] = now
     _save_thread_record(_threads[thread_id])
+
+    if _memory:
+        _memory.save_analytics(body.user_id, "human_feedback", {
+            "thread_id": thread_id,
+            "rating": "down",
+            "feedback": body.feedback or "thumbs_down",
+        })
 
     return {"status": "rejected", "messages": _threads.get(thread_id, {}).get("messages", [])}
 
@@ -509,3 +638,23 @@ def save_brand_rule(user_id: str, body: BrandRuleSaveRequest):
         raise HTTPException(status_code=503, detail="Memory not initialised")
     _memory.save_brand_rule(user_id, body.key, body.value)
     return {"status": "saved", "key": body.key}
+
+
+# ── Product Catalog (RAG ingestion) ──
+
+@router.post("/catalog/products/bulk")
+def bulk_load_product_catalog(body: ProductCatalogBulkLoadRequest):
+    """Bulk load product documents into the global product catalog vector store."""
+    if not body.items:
+        return {"loaded": 0}
+
+    items = [
+        {
+            "id": item.id,
+            "text": item.text,
+            "metadata": item.metadata,
+        }
+        for item in body.items
+    ]
+    loaded = load_products_to_catalog(items)
+    return {"loaded": loaded}

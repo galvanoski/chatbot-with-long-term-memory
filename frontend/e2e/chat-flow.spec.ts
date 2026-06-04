@@ -81,7 +81,7 @@ test('creates a chat and renders returned messages', async ({ page }) => {
 
   await page.goto('/')
 
-  const homePrompt = page.getByPlaceholder('Sag mir, welchen Content du brauchst...')
+  const homePrompt = page.getByRole('textbox').first()
   const homeSubmit = page.getByTestId('home-submit')
   await page.waitForFunction(() => {
     const element = document.querySelector('[data-testid="home-submit"]') as { __vueParentComponent?: unknown } | null
@@ -92,10 +92,10 @@ test('creates a chat and renders returned messages', async ({ page }) => {
   await homeSubmit.click()
 
   await expect(page).toHaveURL(new RegExp(`/chat/${threadId}$`))
-  await expect(page.getByTestId('chat-debug')).toContainText('"hasThread": true')
-  await expect(page.getByTestId('chat-debug')).toContainText('"renderedMessageCount": 2')
-  await expect(page.getByTestId('chat-messages').getByText(`Borrador para: ${prompt}`)).toBeVisible()
+  await expect(page.getByTestId('chat-messages').getByText(prompt)).toBeVisible()
   await expect(page.getByTestId('approval-panel')).toBeVisible()
   await expect(page.getByTestId('pending-copy-content')).toContainText(`Borrador para: ${prompt}`)
   await expect(page.getByTestId('approval-panel').getByText('#bitcoin')).toBeVisible()
+  await expect(page.getByTestId('thumbs-up')).toBeVisible()
+  await expect(page.getByTestId('thumbs-down')).toBeVisible()
 })

@@ -18,6 +18,11 @@ export interface Thread {
     hashtags: string[]
     product_name?: string
     product_url?: string
+    parts?: {
+      hook?: string
+      body?: string
+      cta?: string
+    }
   }
 }
 
@@ -37,11 +42,17 @@ export interface ThreadState {
     hashtags: string[]
     product_name?: string
     product_url?: string
+    parts?: {
+      hook?: string
+      body?: string
+      cta?: string
+    }
   }
   messages: Message[]
 }
 
 export interface SendMessageResponse {
+  title?: string
   status: 'awaiting_approval' | 'published' | 'active'
   messages: Message[]
   pending_copy?: {
@@ -49,5 +60,10 @@ export interface SendMessageResponse {
     hashtags: string[]
     product_name?: string
     product_url?: string
+    parts?: {
+      hook?: string
+      body?: string
+      cta?: string
+    }
   }
 }
