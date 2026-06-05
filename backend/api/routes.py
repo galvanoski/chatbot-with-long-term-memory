@@ -344,18 +344,6 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                 "messages": [HumanMessage(content=body.content)],
                 "user_id": body.user_id,
                 "thread_id": thread_id,
-                "approval_status": None,
-                "product_skus": [],
-                "trend_insights": "",
-                "meme_references": [],
-                "draft_copy_de": "",
-                "copy_metadata": {},
-                "human_feedback": None,
-                "publication_result": None,
-                "brand_rules": {},
-                "ltm_context": [],
-                "_analytics_log": [],
-                "_current_node": "",
             },
             config,
         )
@@ -578,6 +566,46 @@ def _strip_leading_user_echo(text: str, messages: list[dict]) -> str:
     return content
 
 
+def _coerce_plain_assistant_content(text: str) -> str:
+    """Convert JSON-like assistant content into the final plain-text copy format."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+
+    candidate = raw
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate)
+
+    payload = None
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            payload = parsed
+    except Exception:
+        match = re.search(r"\{[\s\S]*\}", candidate)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = None
+
+    if not payload:
+        return raw
+
+    hook = str(payload.get("hook") or "").strip()
+    body = str(payload.get("body") or "").strip()
+    cta = str(payload.get("cta") or "").strip()
+    hashtags_raw = payload.get("hashtags") or []
+    hashtags = " ".join(
+        [tag if str(tag).startswith("#") else f"#{tag}" for tag in hashtags_raw if str(tag).strip()]
+    ).strip()
+    blocks = [segment for segment in [hook, body, cta, hashtags] if segment]
+    return "\n\n".join(blocks) if blocks else raw
+
+
 def _normalize_thread_messages(messages: list[dict]) -> list[dict]:
     """Normalize messages for frontend: strip assistant prompt-echo and collapse immediate duplicates."""
     normalized: list[dict] = []
@@ -585,11 +613,15 @@ def _normalize_thread_messages(messages: list[dict]) -> list[dict]:
         item = dict(message)
         role = str(item.get("role") or "")
         if role == "assistant":
+            item["content"] = _coerce_plain_assistant_content(str(item.get("content") or ""))
             item["content"] = _strip_leading_user_echo(str(item.get("content") or ""), normalized)
 
         if normalized and _message_signature(normalized[-1]) == _message_signature(item):
             continue
         normalized.append(item)
+
+    for index, message in enumerate(normalized):
+        message["id"] = str(index)
     return normalized
 
 
@@ -713,21 +745,13 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
         extracted_messages = _filter_internal_user_messages(_extract_messages(values))
         messages = _merge_thread_messages(messages, extracted_messages)
         if draft_copy:
+            draft_copy = _coerce_plain_assistant_content(draft_copy)
             draft_copy = _strip_leading_user_echo(draft_copy, messages)
-        if draft_copy and status == "awaiting_approval":
-            # Remove only the last assistant message if it duplicates the draft
-            if messages and messages[-1].get("role") == "assistant":
-                last_content = messages[-1].get("content", "")
-                if last_content == draft_copy:
-                    messages.pop()
-
-            messages.append({
-                "id": str(len(messages)),
-                "role": "assistant",
-                "content": draft_copy,
-                "created_at": _utc_now_iso(),
-            })
-        elif draft_copy and not any(m["role"] == "assistant" for m in messages):
+        has_visible_assistant_reply = bool(messages and messages[-1].get("role") == "assistant")
+        if draft_copy and not has_visible_assistant_reply and not any(
+            m.get("role") == "assistant" and str(m.get("content") or "").strip() == draft_copy
+            for m in messages
+        ):
             messages.append({
                 "id": str(len(messages)),
                 "role": "assistant",
@@ -931,18 +955,6 @@ async def _send_message_impl(thread_id: str, body: MessageSendRequest):
             "messages": [HumanMessage(content=body.content)],
             "user_id": body.user_id,
             "thread_id": thread_id,
-            "approval_status": None,
-            "product_skus": [],
-            "trend_insights": "",
-            "meme_references": [],
-            "draft_copy_de": "",
-            "copy_metadata": {},
-            "human_feedback": None,
-            "publication_result": None,
-            "brand_rules": {},
-            "ltm_context": [],
-            "_analytics_log": [],
-            "_current_node": "",
         },
         config,
     )

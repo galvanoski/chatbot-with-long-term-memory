@@ -133,6 +133,10 @@ function preserveStreamedAssistantText(serverMessages: UIMessage[], streamedText
 
   const lastAssistant = serverMessages[lastAssistantIndex]!
   const serverText = (lastAssistant.parts?.[0]?.text ?? lastAssistant.content ?? '').trim()
+  if (serverText) {
+    // Prefer the final normalized backend response over any streamed intermediate buffer.
+    return serverMessages
+  }
   if (looksLikeJsonText(normalizedStreamed) && !looksLikeJsonText(serverText)) {
     // Keep backend-normalized plain text instead of raw streamed JSON.
     return serverMessages
@@ -310,17 +314,7 @@ export function useGeekCatChat() {
         }
 
         if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
-          const delta = String((payload as { text?: unknown }).text ?? '')
-          messages.value = messages.value.map(message => {
-            if (message.id !== assistantStreamId) return message
-            const currentText = message.parts?.[0]?.text ?? ''
-            const nextText = `${currentText}${delta}`
-            return {
-              ...message,
-              content: nextText,
-              parts: [{ type: 'text' as const, text: nextText }]
-            }
-          })
+          // Keep the inline loading placeholder visible until the final normalized response arrives.
           return
         }
 
@@ -474,17 +468,7 @@ export function useGeekCatChat() {
         if (controller.signal.aborted) return
 
         if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
-          const delta = String((payload as { text?: unknown }).text ?? '')
-          messages.value = messages.value.map(message => {
-            if (message.id !== assistantStreamId) return message
-            const currentText = message.parts?.[0]?.text ?? ''
-            const nextText = `${currentText}${delta}`
-            return {
-              ...message,
-              content: nextText,
-              parts: [{ type: 'text' as const, text: nextText }]
-            }
-          })
+          // Keep the inline loading placeholder visible until the final normalized response arrives.
           return
         }
 

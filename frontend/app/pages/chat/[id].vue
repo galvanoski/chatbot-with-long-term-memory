@@ -117,7 +117,10 @@ const displayedMessages = computed(() => {
     if (message?.role !== 'assistant') return true
     // Keep the active streaming placeholder inline where the next assistant response will appear.
     return hasMessageText(message) || isStreamingPlaceholder(message)
-  })
+  }).map((message, index) => ({
+    ...message,
+    _renderKey: `${message?.id || 'msg'}-${message?.role || 'unknown'}-${index}`
+  }))
 })
 
 const latestAssistantIndex = computed(() => {
@@ -212,7 +215,7 @@ const debugState = computed(() => JSON.stringify({
         <div :key="chatId" data-testid="chat-messages" class="mx-auto w-full max-w-3xl space-y-6 pb-8">
           <div
             v-for="(msg, idx) in displayedMessages"
-            :key="msg.id"
+            :key="msg._renderKey"
             class="chat-row"
             :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
           >

@@ -6,15 +6,29 @@ from backend.graph.tools.rag import query_product_catalog, query_meme_repository
 logger = logging.getLogger("geekcat.nodes.research")
 
 
+def _build_research_query(state: AgentState, max_messages: int = 4) -> str:
+    """Build a context-aware research query from the latest conversation turns."""
+    rendered: list[str] = []
+    for message in state.get("messages", [])[-max_messages:]:
+        msg_type = getattr(message, "type", "")
+        role = "assistant" if msg_type in ("ai", "assistant") else "user"
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        if text.strip():
+            rendered.append(f"{role}: {text.strip()}")
+    return "\n".join(rendered).strip()
+
+
 def research_node(state: AgentState) -> dict:
     """Research node: queries RAG for relevant products, trends, and memes
     based on the latest user message context."""
     user_message = state["messages"][-1].content if state["messages"] else ""
-    logger.info("research_node: query=%s", user_message[:80])
+    research_query = _build_research_query(state) or user_message
+    logger.info("research_node: query=%s", research_query[:80])
 
     # Query RAG for relevant products and memes
-    products = query_product_catalog(user_message, top_k=3)
-    memes = query_meme_repository(user_message, top_k=2)
+    products = query_product_catalog(research_query, top_k=3)
+    memes = query_meme_repository(research_query, top_k=2)
 
     product_context = []
     for p in products:
