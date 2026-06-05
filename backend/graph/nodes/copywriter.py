@@ -276,7 +276,8 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         "- Tone: sarcastic, tech-savvy, brutally funny.\n"
         "- Always include a cat pun or a tech reference.\n"
         "- Keep it concise — Instagram caption style (max 2200 chars).\n"
-        "- Include 3-5 relevant hashtags.\n"
+        "- ALWAYS include EXACTLY 5 relevant hashtags (no more, no less).\n"
+        "- ALWAYS include emojis throughout the text to make it expressive and engaging (at least 3 emojis spread across hook, body, and CTA).\n"
         "- Target audience: IT pros who code by day and pet cats by night.\n"
         "- If product context contains a sarcastic legend, use it as the hook nucleus.\n"
         f"{rules_text}\n\n"
@@ -289,13 +290,13 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         f"{previous_draft_section}"
         "Return ONLY valid JSON with this exact schema:\n"
         "{\n"
-        "  \"hook\": \"short sarcastic opener in German\",\n"
-        "  \"body\": \"main copy in German\",\n"
-        "  \"cta\": \"short CTA in German\",\n"
-        "  \"hashtags\": [\"#tag1\", \"#tag2\", \"#tag3\"],\n"
+        "  \"hook\": \"short sarcastic opener in German with emojis\",\n"
+        "  \"body\": \"main copy in German with emojis\",\n"
+        "  \"cta\": \"short CTA in German with emojis\",\n"
+        "  \"hashtags\": [\"#tag1\", \"#tag2\", \"#tag3\", \"#tag4\", \"#tag5\"],\n"
         "  \"style_notes\": {\"sarcasm_level\": \"1-10\", \"used_product_legend\": true}\n"
         "}\n"
-        "No markdown. No additional text."
+        "IMPORTANT: hashtags array MUST contain EXACTLY 5 items. No markdown. No additional text."
     )
 
     # ── Hook 3: wrap_model_call ──
@@ -404,6 +405,14 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
             for h in raw_hashtags
             if str(h).strip()
         ]
+        # Enforce exactly 5 hashtags: pad with generic fallbacks if model returned fewer.
+        _fallback_tags = ["#TheGeekCat", "#GeekLife", "#CatCoder", "#TechHumor", "#CatAndCode"]
+        while len(hashtags) < 5:
+            for tag in _fallback_tags:
+                if tag not in hashtags:
+                    hashtags.append(tag)
+                if len(hashtags) == 5:
+                    break
         hashtags = hashtags[:5]
 
         if mode == "revise" and "full_post" not in fields_to_update:

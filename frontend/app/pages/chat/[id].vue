@@ -273,41 +273,51 @@ const debugState = computed(() => JSON.stringify({
                 data-testid="approval-panel"
                 class="chat-message-actions"
               >
-                <button type="button" class="chat-action-btn" @click="copyDraftToClipboard(messageText(msg))" aria-label="Copy response">
-                  <UIcon name="i-lucide-copy" class="size-4" />
-                </button>
-                <button
-                  data-testid="thumbs-up"
-                  type="button"
-                  class="chat-action-btn"
-                  :disabled="isLoading || isSending"
-                  @click="handleApprove(messageText(msg))"
-                  aria-label="Approve response"
-                >
-                  <UIcon name="i-lucide-thumbs-up" class="size-4" />
-                </button>
-                <button
-                  data-testid="thumbs-down"
-                  type="button"
-                  class="chat-action-btn"
-                  @click="handleReject(messageText(msg))"
-                  aria-label="Reject response"
-                >
-                  <UIcon name="i-lucide-thumbs-down" class="size-4" />
-                </button>
-                <button
-                  data-testid="regenerate-response"
-                  type="button"
-                  class="chat-action-btn"
-                  :disabled="regenerateProcessing"
-                  @click="handleRegenerate(messageText(msg))"
-                  aria-label="Regenerate response"
-                >
-                  <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
-                </button>
-                <button type="button" class="chat-action-btn" aria-label="More actions">
-                  <UIcon name="i-lucide-ellipsis" class="size-4" />
-                </button>
+                <UTooltip text="Kopieren">
+                  <button type="button" class="chat-action-btn" @click="copyDraftToClipboard(messageText(msg))" aria-label="Kopieren">
+                    <UIcon name="i-lucide-copy" class="size-4" />
+                  </button>
+                </UTooltip>
+                <UTooltip text="Genehmigen">
+                  <button
+                    data-testid="thumbs-up"
+                    type="button"
+                    class="chat-action-btn"
+                    :disabled="isLoading || isSending"
+                    @click="handleApprove(messageText(msg))"
+                    aria-label="Genehmigen"
+                  >
+                    <UIcon name="i-lucide-thumbs-up" class="size-4" />
+                  </button>
+                </UTooltip>
+                <UTooltip text="Ablehnen">
+                  <button
+                    data-testid="thumbs-down"
+                    type="button"
+                    class="chat-action-btn"
+                    @click="handleReject(messageText(msg))"
+                    aria-label="Ablehnen"
+                  >
+                    <UIcon name="i-lucide-thumbs-down" class="size-4" />
+                  </button>
+                </UTooltip>
+                <UTooltip text="Neu generieren">
+                  <button
+                    data-testid="regenerate-response"
+                    type="button"
+                    class="chat-action-btn"
+                    :disabled="regenerateProcessing"
+                    @click="handleRegenerate(messageText(msg))"
+                    aria-label="Neu generieren"
+                  >
+                    <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
+                  </button>
+                </UTooltip>
+                <UTooltip text="Weitere Aktionen">
+                  <button type="button" class="chat-action-btn" aria-label="Weitere Aktionen">
+                    <UIcon name="i-lucide-ellipsis" class="size-4" />
+                  </button>
+                </UTooltip>
 
                 <div v-if="idx === latestAssistantIndex && pending?.sources?.length" class="chat-inline-sources" data-testid="chat-sources">
                   <a
