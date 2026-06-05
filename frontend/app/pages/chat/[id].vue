@@ -4,15 +4,7 @@ const chatId = route.params.id as string
 const initialPrompt = computed(() => typeof route.query.prompt === 'string' ? route.query.prompt : '')
 const debugEnabled = computed(() => route.query.debug === '1')
 
-const feedbackInput = ref('')
-const showFeedback = ref(false)
 const initialPromptSent = ref(false)
-const editableHook = ref('')
-const editableBody = ref('')
-const editableCta = ref('')
-const editMode = ref(false)
-const feedbackNotice = ref('')
-const feedbackProcessing = ref(false)
 const regenerateProcessing = ref(false)
 
 const chat = useGeekCatChat()
@@ -44,51 +36,47 @@ onMounted(async () => {
   await navigateTo(`/chat/${chatId}`, { replace: true })
 })
 
-async function handleApprove() {
-  const edited = editMode.value
-    ? {
-        hook: editableHook.value,
-        body: editableBody.value,
-        cta: editableCta.value
-      }
-    : undefined
-  const ok = await chat.approveCopy(edited, 'thumbs_up')
-  if (ok) {
-    feedbackNotice.value = 'Danke! Dein positives Feedback wurde gespeichert.'
-    showFeedback.value = false
-  }
+async function handleApprove(message: string) {
+  await chat.approveCopy(message || assistantResponsePreview.value, 'thumbs_up')
 }
 
-function handleReject() {
-  showFeedback.value = true
+async function handleReject(message: string) {
+  const note = (message || assistantResponsePreview.value || 'thumbs_down').slice(0, 500)
+  await chat.rejectCopy(note)
 }
 
-async function handleRegenerate() {
+async function handleRegenerate(message: string) {
   regenerateProcessing.value = true
   try {
-    const ok = await chat.regenerateCopy()
-    if (ok) {
-      feedbackNotice.value = 'Neue Variante wurde erstellt.'
-      showFeedback.value = false
-    }
+    await chat.regenerateCopy(message || assistantResponsePreview.value || undefined)
   } finally {
     regenerateProcessing.value = false
   }
 }
 
-async function submitFeedback() {
-  const note = feedbackInput.value?.trim() || 'thumbs_down'
-  feedbackProcessing.value = true
+async function copyMessageToClipboard(text: string) {
+  if (!text) return
+  await navigator.clipboard.writeText(text)
+}
+
+async function handleThumbsUp(msg: any) {
+  if (!currentThread.value) return
   try {
-    const ok = await chat.rejectCopy(note)
-    if (ok) {
-      feedbackNotice.value = 'Danke! Neue Version basierend auf deinem Feedback wurde erstellt.'
-      showFeedback.value = false
-      feedbackInput.value = ''
-    }
-  } finally {
-    feedbackProcessing.value = false
-  }
+    await $fetch(`/api/threads/${currentThread.value.id}/approve`, {
+      method: 'POST',
+      body: { feedback: 'thumbs_up' }
+    })
+  } catch {}
+}
+
+async function handleThumbsDown(msg: any) {
+  if (!currentThread.value) return
+  try {
+    await $fetch(`/api/threads/${currentThread.value.id}/reject`, {
+      method: 'POST',
+      body: { feedback: 'thumbs_down' }
+    })
+  } catch {}
 }
 
 const input = ref('')
@@ -102,70 +90,66 @@ const chatError = computed(() => unref(chat.error))
 const showDebugPanel = computed(() => import.meta.dev && debugEnabled.value)
 const threadTitle = computed(() => currentThread.value?.title || 'Neuer Chat')
 
-const displayedMessages = computed(() => {
-  const items = [...threadMessages.value]
-  if (!isAwaiting.value || !pending.value || items.length === 0) {
-    return items
-  }
-
-  const lastMessage = items[items.length - 1]
-  const lastText = lastMessage?.parts?.[0]?.text?.trim()
-  const pendingText = pending.value.content?.trim()
-  const isDuplicateDraft = lastMessage?.role === 'assistant' && !!lastText && lastText === pendingText
-
-  return isDuplicateDraft ? items.slice(0, -1) : items
-})
-
 function messageText(message: { parts?: Array<{ text?: string }>; content?: string }) {
   return message?.parts?.[0]?.text || message?.content || ''
 }
 
-function readDraftPart(parts: Record<string, unknown> | undefined, key: 'hook' | 'body' | 'cta') {
-  const value = parts?.[key]
-  return typeof value === 'string' ? value : ''
+function hasMessageText(message: { parts?: Array<{ text?: string }>; content?: string }) {
+  return messageText(message).trim().length > 0
 }
 
-function useGeneratedDraft() {
-  if (!pending.value) return
-  editableHook.value = readDraftPart(pending.value.parts, 'hook')
-  editableBody.value = readDraftPart(pending.value.parts, 'body') || pending.value.content || ''
-  editableCta.value = readDraftPart(pending.value.parts, 'cta')
+function isTemporaryMessage(message: { id?: string }) {
+  return typeof message?.id === 'string' && message.id.startsWith('temp-')
 }
 
-function getDraftPreview() {
-  if (!pending.value) return ''
-  if (!editMode.value) return pending.value.content
-  return [editableHook.value, editableBody.value, editableCta.value].filter(Boolean).join('\n\n')
+function isStreamingPlaceholder(message: { id?: string; role?: string; parts?: Array<{ text?: string }>; content?: string }) {
+  return message?.role === 'assistant' && isTemporaryMessage(message) && !hasMessageText(message)
 }
 
-async function copyDraftToClipboard() {
-  const text = getDraftPreview().trim()
-  if (!text) return
-  await navigator.clipboard.writeText(text)
-  feedbackNotice.value = 'Entwurf in die Zwischenablage kopiert.'
-}
+const loadingStatusText = computed(() => {
+  if (regenerateProcessing.value) return 'The agent is revising the response and preparing a better version.'
+  if (isSending.value) return 'The agent is reviewing your request and drafting a response.'
+  return 'The agent is working on the next response.'
+})
 
-watch(pending, (next) => {
-  if (!next) {
-    editableHook.value = ''
-    editableBody.value = ''
-    editableCta.value = ''
-    editMode.value = false
-    showFeedback.value = false
-    return
+const displayedMessages = computed(() => {
+  return threadMessages.value.filter((message) => {
+    if (message?.role !== 'assistant') return true
+    // Keep the active streaming placeholder inline where the next assistant response will appear.
+    return hasMessageText(message) || isStreamingPlaceholder(message)
+  })
+})
+
+const latestAssistantIndex = computed(() => {
+  for (let index = displayedMessages.value.length - 1; index >= 0; index--) {
+    if (displayedMessages.value[index]?.role === 'assistant') return index
   }
+  return -1
+})
 
-  editableHook.value = readDraftPart(next.parts, 'hook')
-  editableBody.value = readDraftPart(next.parts, 'body')
-  editableCta.value = readDraftPart(next.parts, 'cta')
-
-  if (!editableHook.value && !editableBody.value && !editableCta.value && next.content) {
-    const lines = next.content.split('\n').filter(Boolean)
-    editableHook.value = lines[0] ?? ''
-    editableBody.value = lines.slice(1).join('\n').trim()
-    editableCta.value = ''
+const latestAssistantMessage = computed(() => {
+  for (let index = displayedMessages.value.length - 1; index >= 0; index--) {
+    const message = displayedMessages.value[index]
+    if (message?.role === 'assistant') return message
   }
-}, { immediate: true })
+  return null
+})
+
+const assistantResponsePreview = computed(() => {
+  if (!latestAssistantMessage.value) return ''
+  return messageText(latestAssistantMessage.value)
+})
+
+async function copyDraftToClipboard(text: string) {
+  const normalized = (text || '').trim()
+  if (!normalized) return
+  await navigator.clipboard.writeText(normalized)
+}
+
+watch(assistantResponsePreview, () => {
+  // Keep helper state lightweight; per-message actions should not rewrite prior responses.
+})
+
 const debugState = computed(() => JSON.stringify({
   chatId,
   loading: isLoading.value,
@@ -225,17 +209,9 @@ const debugState = computed(() => JSON.stringify({
           <p class="text-xs text-muted mt-1">Schreibe unten deinen Prompt oder starte mit einem Chip von der Startseite.</p>
         </div>
 
-        <div
-          v-if="isLoading"
-          data-testid="chat-processing"
-          class="mx-auto mb-4 w-full max-w-3xl rounded-lg border border-default bg-muted/40 px-3 py-2 text-xs text-muted"
-        >
-          Der Agent analysiert gerade Kontext und formuliert eine Antwort...
-        </div>
-
         <div :key="chatId" data-testid="chat-messages" class="mx-auto w-full max-w-3xl space-y-6 pb-8">
           <div
-            v-for="msg in displayedMessages"
+            v-for="(msg, idx) in displayedMessages"
             :key="msg.id"
             class="chat-row"
             :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
@@ -245,137 +221,70 @@ const debugState = computed(() => JSON.stringify({
             </div>
 
             <div v-else class="chat-assistant-block">
-              <p class="chat-assistant-text">{{ messageText(msg) }}</p>
-            </div>
-          </div>
+              <template v-if="isStreamingPlaceholder(msg)">
+                <div data-testid="chat-processing" class="chat-response-pending">
+                  <div class="chat-thinking-indicator">
+                    <span class="dot" /><span class="dot" /><span class="dot" />
+                  </div>
+                  <p class="chat-processing-text">{{ loadingStatusText }}</p>
+                </div>
+              </template>
+              <p v-else class="chat-assistant-text">{{ messageText(msg) }}</p>
 
-          <div v-if="isAwaiting && pending" data-testid="approval-panel" class="chat-row justify-start">
-            <div class="chat-assistant-block space-y-4">
-              <p data-testid="pending-copy-content" class="chat-assistant-text">{{ getDraftPreview() }}</p>
-
-              <div v-if="feedbackNotice" class="rounded-md border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
-                {{ feedbackNotice }}
-              </div>
-
-              <div class="flex flex-wrap items-center gap-2">
-                <UButton size="sm" variant="ghost" color="neutral" icon="i-lucide-copy" @click="copyDraftToClipboard">
-                  Copy
-                </UButton>
-                <UButton
-                  data-testid="regenerate-response"
-                  size="sm"
-                  variant="ghost"
-                  color="neutral"
-                  icon="i-lucide-refresh-cw"
-                  :loading="regenerateProcessing || isLoading || isSending"
-                  :disabled="regenerateProcessing || isLoading || isSending || isAwaiting"
-                  @click="handleRegenerate"
-                >
-                  Regenerate
-                </UButton>
-                <UButton
-                  size="sm"
-                  variant="ghost"
-                  color="neutral"
-                  icon="i-lucide-pencil"
-                  @click="editMode = !editMode"
-                >
-                  {{ editMode ? 'Hide edit' : 'Edit' }}
-                </UButton>
-                <UButton
+              <div
+                v-if="hasMessageText(msg) && !isTemporaryMessage(msg)"
+                data-testid="approval-panel"
+                class="chat-message-actions"
+              >
+                <button type="button" class="chat-action-btn" @click="copyDraftToClipboard(messageText(msg))" aria-label="Copy response">
+                  <UIcon name="i-lucide-copy" class="size-4" />
+                </button>
+                <button
                   data-testid="thumbs-up"
-                  size="sm"
-                  variant="ghost"
-                  color="neutral"
-                  icon="i-lucide-thumbs-up"
-                  :loading="isLoading || isSending"
-                  :disabled="isLoading || isSending || isAwaiting"
-                  @click="handleApprove"
-                />
-                <UButton
-                  data-testid="thumbs-down"
-                  size="sm"
-                  variant="ghost"
-                  color="neutral"
-                  icon="i-lucide-thumbs-down"
-                  :disabled="isLoading || isSending || feedbackProcessing || isAwaiting"
-                  @click="handleReject"
-                />
-              </div>
-
-              <div v-if="editMode" class="grid gap-3 md:grid-cols-3">
-                <div>
-                  <p class="text-xs text-muted mb-1">Hook</p>
-                  <UTextarea v-model="editableHook" data-testid="pending-hook" autoresize :rows="4" />
-                </div>
-
-                <div>
-                  <p class="text-xs text-muted mb-1">Body</p>
-                  <UTextarea v-model="editableBody" data-testid="pending-body" autoresize :rows="6" />
-                </div>
-
-                <div>
-                  <p class="text-xs text-muted mb-1">CTA</p>
-                  <UTextarea v-model="editableCta" data-testid="pending-cta" autoresize :rows="4" />
-                </div>
-              </div>
-
-              <div v-if="pending.hashtags?.length" class="flex flex-wrap gap-1">
-                <UBadge
-                  v-for="tag in pending.hashtags"
-                  :key="tag"
-                  color="neutral"
-                  variant="outline"
-                  size="sm"
+                  type="button"
+                  class="chat-action-btn"
+                  :disabled="isLoading || isSending"
+                  @click="handleApprove(messageText(msg))"
+                  aria-label="Approve response"
                 >
-                  {{ tag }}
-                </UBadge>
-              </div>
+                  <UIcon name="i-lucide-thumbs-up" class="size-4" />
+                </button>
+                <button
+                  data-testid="thumbs-down"
+                  type="button"
+                  class="chat-action-btn"
+                  @click="handleReject(messageText(msg))"
+                  aria-label="Reject response"
+                >
+                  <UIcon name="i-lucide-thumbs-down" class="size-4" />
+                </button>
+                <button
+                  data-testid="regenerate-response"
+                  type="button"
+                  class="chat-action-btn"
+                  :disabled="regenerateProcessing"
+                  @click="handleRegenerate(messageText(msg))"
+                  aria-label="Regenerate response"
+                >
+                  <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
+                </button>
+                <button type="button" class="chat-action-btn" aria-label="More actions">
+                  <UIcon name="i-lucide-ellipsis" class="size-4" />
+                </button>
 
-              <div v-if="pending.sources?.length" class="space-y-2" data-testid="chat-sources">
-                <p class="text-xs font-semibold uppercase tracking-wide text-muted">Sources</p>
-                <div class="flex flex-wrap gap-2">
+                <div v-if="idx === latestAssistantIndex && pending?.sources?.length" class="chat-inline-sources" data-testid="chat-sources">
                   <a
                     v-for="source in pending.sources"
                     :key="`${source.label}-${source.url || ''}`"
                     :href="source.url || '#'
                     "
-                    class="inline-flex items-center gap-1 rounded-full border border-default px-2 py-1 text-xs text-toned hover:bg-muted/40"
+                    class="chat-source-link"
                     :target="source.url ? '_blank' : undefined"
                     :rel="source.url ? 'noopener noreferrer' : undefined"
-                    @click.prevent="!source.url"
                   >
                     <UIcon name="i-lucide-link" class="size-3" />
                     <span>{{ source.label }}</span>
                   </a>
-                </div>
-              </div>
-
-              <div v-if="showFeedback" class="space-y-2">
-                <div
-                  v-if="feedbackProcessing || isLoading"
-                  class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
-                >
-                  Agent verarbeitet dein Feedback und erstellt gerade eine neue Version...
-                </div>
-
-                <div class="flex gap-2 items-start">
-                  <UTextarea
-                    v-model="feedbackInput"
-                    placeholder="Was war unpassend?"
-                    size="sm"
-                    class="flex-1"
-                    :disabled="feedbackProcessing || isLoading"
-                  />
-                  <UButton
-                    size="sm"
-                    color="neutral"
-                    :loading="feedbackProcessing || isLoading"
-                    :disabled="feedbackProcessing || isLoading"
-                    @click="submitFeedback"
-                  >
-                    {{ feedbackProcessing || isLoading ? 'Regenerating...' : 'Send' }}
-                  </UButton>
                 </div>
               </div>
             </div>

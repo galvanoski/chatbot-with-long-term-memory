@@ -37,13 +37,43 @@ def _extract_json_payload(raw: str) -> dict | None:
         return None
 
 
+def _strip_prompt_echo(text: str, user_prompt: str) -> str:
+    """Remove common LLM behavior of echoing the user instruction as first line."""
+    content = (text or "").strip()
+    prompt = (user_prompt or "").strip()
+    if not content or not prompt:
+        return content
+
+    prompt_lower = prompt.lower()
+    lines = [line.rstrip() for line in content.splitlines()]
+    if not lines:
+        return content
+
+    first = lines[0].strip().lstrip("-•* ").strip()
+    if first.lower() == prompt_lower:
+        lines = lines[1:]
+    elif first.lower().startswith(prompt_lower):
+        lines[0] = first[len(prompt):].lstrip("-:.,; ").strip()
+
+    cleaned = "\n".join(lines).strip()
+    return cleaned or content
+
+
 def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dict:
     """Copywriter node: generates marketing copy in German.
 
     Integrates middleware hooks 2 (before_model), 3 (wrap_model_call),
     and 5 (after_model) when middleware is provided.
     """
-    user_message = state["messages"][-1].content if state["messages"] else ""
+    human_feedback = (state.get("human_feedback", "") or "").strip()
+
+    if state["messages"]:
+        user_message = state["messages"][-1].content
+    elif human_feedback:
+        user_message = human_feedback
+    else:
+        user_message = ""
+
     logger.info("copywriter_node: generating copy for: %s", user_message[:60])
 
     # Build base system prompt
@@ -134,6 +164,7 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         hashtags = hashtags[:5]
 
         content = "\n\n".join(part for part in [hook, body, cta, " ".join(hashtags)] if part)
+        content = _strip_prompt_echo(content, user_message)
         copy_validation = {
             **getattr(response, "_validation", {}),
             "structured_output": True,
@@ -146,6 +177,7 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
             "style_notes": payload.get("style_notes", {}),
         }
     else:
+        content = _strip_prompt_echo(content, user_message)
         hashtags = [w for w in content.split() if w.startswith("#")]
         copy_validation = {
             **getattr(response, "_validation", {}),

@@ -1,3 +1,4 @@
+
 2026-06-04 14:47:11,634 [INFO] geekcat: Initialising The Geek Cat backend...
 2026-06-04 14:47:13,341 [INFO] geekcat.graph.builder: marketing graph built successfully
 2026-06-04 14:47:13,355 [INFO] geekcat: Backend initialised successfully
@@ -13,3 +14,21 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 2026-06-04 14:51:40,044 [INFO] geekcat.api: migrated chat threads from anon_bd41caf6-32cc-42be-ab34-10af95fbac2c to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
 2026-06-04 15:01:58,041 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_e1010940-06ad-4802-bf9c-13c0df6728ab
 2026-06-04 15:02:03,447 [INFO] geekcat.api: migrated chat threads from anon_e1010940-06ad-4802-bf9c-13c0df6728ab to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
+2026-06-04 18:48:13,046 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_30370c91-8807-4c5e-9454-e8fb1d70ddae
+2026-06-04 18:48:14,270 [INFO] geekcat.api: migrated chat threads from anon_30370c91-8807-4c5e-9454-e8fb1d70ddae to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
+2026-06-04 18:48:16,992 [INFO] geekcat.middleware: before_agent: user=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c thread=22524d77-71a3-4a05-b5d2-4106c8f12bb9
+2026-06-04 18:48:18,209 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/embeddings "HTTP/1.1 200 OK"
+2026-06-04 18:48:18,721 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/embeddings "HTTP/1.1 200 OK"
+2026-06-04 18:48:19,101 [INFO] geekcat.nodes.research: research_node: query=Bitte regeneriere den Copy. Zusatzeinweisung: Bitte erstelle eine neue Variante 
+2026-06-04 18:48:19,185 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/embeddings "HTTP/1.1 200 OK"
+2026-06-04 18:48:19,765 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/embeddings "HTTP/1.1 200 OK"
+2026-06-04 18:48:20,051 [INFO] geekcat.nodes.copywriter: copywriter_node: generating copy for: Bitte regeneriere den Copy. Zusatzeinweisung: Bitte erstelle
+2026-06-04 18:48:20,067 [INFO] geekcat.middleware: wrap_model_call: task=copywriter model=openai/gpt-5-mini
+2026-06-04 18:48:20,654 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-06-04 18:48:37,146 [WARNING] geekcat.middleware: after_model: fewer than 2 hashtags
+2026-06-04 18:48:37,157 [INFO] geekcat.middleware: after_agent: user=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c elapsed=18.12s
+2026-06-04 18:48:37,470 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/embeddings "HTTP/1.1 200 OK"
+2026-06-04 18:57:33,222 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_c9553acd-7209-46de-9072-34fdc40dbd39
+2026-06-04 18:57:35,505 [INFO] geekcat.api: migrated chat threads from anon_c9553acd-7209-46de-9072-34fdc40dbd39 to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c
+2026-06-04 18:59:54,890 [INFO] geekcat.api: migrated chat threads from anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c to anon_5fe1e3f7-f6b7-4f9a-aede-4e0fe892d5c6
+2026-06-04 18:59:56,025 [INFO] geekcat.api: migrated chat threads from anon_5fe1e3f7-f6b7-4f9a-aede-4e0fe892d5c6 to anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c

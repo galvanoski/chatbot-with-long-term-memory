@@ -15,10 +15,6 @@ function parseValidatedResponse<T>(schema: { parse: (value: unknown) => T }, val
   }
 }
 
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
 type StreamEventName = 'start' | 'delta' | 'done' | 'error'
 
 async function consumeSSEStream(
@@ -66,68 +62,94 @@ async function consumeSSEStream(
   }
 }
 
-async function streamAssistantText(
-  finalMessages: UIMessage[],
-  setMessages: (msgs: UIMessage[]) => void,
-  signal?: AbortSignal
-) {
-  if (signal?.aborted) return
-
-  const assistantIndex = [...finalMessages]
-    .map((m, idx) => ({ role: m.role, idx }))
-    .reverse()
-    .find(x => x.role === 'assistant')?.idx
-
-  if (assistantIndex === undefined) {
-    setMessages(finalMessages)
-    return
-  }
-
-  const assistant = finalMessages[assistantIndex]
-  if (!assistant) {
-    setMessages(finalMessages)
-    return
-  }
-  const finalText = assistant?.parts?.[0]?.text ?? ''
-
-  if (!finalText) {
-    setMessages(finalMessages)
-    return
-  }
-
-  const working: UIMessage[] = finalMessages.map(message => ({
-    ...message,
-    parts: [...message.parts]
-  }))
-  working[assistantIndex] = {
-    ...assistant,
-    parts: [{ type: 'text' as const, text: '' }]
-  }
-  setMessages([...working])
-
-  const chunks = Math.min(120, Math.max(20, Math.ceil(finalText.length / 10)))
-  const step = Math.max(1, Math.ceil(finalText.length / chunks))
-
-  for (let cursor = step; cursor <= finalText.length; cursor += step) {
-    if (signal?.aborted) return
-    working[assistantIndex] = {
-      ...assistant,
-      parts: [{ type: 'text' as const, text: finalText.slice(0, cursor) }]
+export function transformMessages(msgs: Thread['messages']): UIMessage[] {
+  return (msgs ?? []).filter(Boolean).map(m => {
+    const normalizedContent = m.role === 'assistant' ? toPlainAssistantText(m.content || '') : (m.content || '')
+    return {
+      ...m,
+      content: normalizedContent,
+      name: m.role === 'assistant' ? 'The Geek Cat' : 'Du',
+      parts: [{ type: 'text' as const, text: normalizedContent }]
     }
-    setMessages([...working])
-    await sleep(18)
-  }
-
-  if (signal?.aborted) return
-  setMessages(finalMessages)
+  })
 }
 
-export function transformMessages(msgs: Thread['messages']): UIMessage[] {
-  return (msgs ?? []).filter(Boolean).map(m => ({
-    ...m,
-    name: m.role === 'assistant' ? 'The Geek Cat' : 'Du',
-    parts: [{ type: 'text' as const, text: m.content || '' }]
-  }))
+function toPlainAssistantText(text: string): string {
+  const raw = (text || '').trim()
+  if (!raw) return ''
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return text
+
+    const payload = parsed as Record<string, unknown>
+    const hook = String(payload.hook ?? '').trim()
+    const body = String(payload.body ?? '').trim()
+    const cta = String(payload.cta ?? '').trim()
+    const hashtagsRaw = Array.isArray(payload.hashtags) ? payload.hashtags : []
+    const hashtags = hashtagsRaw
+      .map(tag => String(tag || '').trim())
+      .filter(Boolean)
+      .map(tag => tag.startsWith('#') ? tag : `#${tag}`)
+      .join(' ')
+
+    const blocks = [hook, body, cta, hashtags].filter(Boolean)
+    return blocks.length ? blocks.join('\n\n') : text
+  } catch {
+    return text
+  }
+}
+
+function looksLikeJsonText(text: string): boolean {
+  const candidate = (text || '').trim()
+  if (!candidate) return false
+  if (!candidate.startsWith('{') && !candidate.startsWith('[')) return false
+  try {
+    JSON.parse(candidate)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function preserveStreamedAssistantText(serverMessages: UIMessage[], streamedText: string): UIMessage[] {
+  const normalizedStreamed = streamedText.trim()
+  if (!normalizedStreamed) return serverMessages
+
+  const lastAssistantIndex = [...serverMessages].map(m => m.role).lastIndexOf('assistant')
+  if (lastAssistantIndex < 0) {
+    return [
+      ...serverMessages,
+      {
+        id: `stream-final-${Date.now()}`,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: streamedText,
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: streamedText }]
+      }
+    ]
+  }
+
+  const lastAssistant = serverMessages[lastAssistantIndex]!
+  const serverText = (lastAssistant.parts?.[0]?.text ?? lastAssistant.content ?? '').trim()
+  if (looksLikeJsonText(normalizedStreamed) && !looksLikeJsonText(serverText)) {
+    // Keep backend-normalized plain text instead of raw streamed JSON.
+    return serverMessages
+  }
+  if (serverText === normalizedStreamed) return serverMessages
+
+  const updatedAssistant = {
+    ...lastAssistant,
+    content: streamedText,
+    parts: [{ type: 'text' as const, text: streamedText }]
+  }
+
+  return [
+    ...serverMessages.slice(0, lastAssistantIndex),
+    updatedAssistant,
+    ...serverMessages.slice(lastAssistantIndex + 1)
+  ]
 }
 
 export function useGeekCatChat() {
@@ -303,6 +325,7 @@ export function useGeekCatChat() {
         }
 
         if (event === 'done' && payload && typeof payload === 'object') {
+          const streamedAssistantText = messages.value.find(message => message.id === assistantStreamId)?.parts?.[0]?.text ?? ''
           const res = parseValidatedResponse(threadActionResponseSchema, payload, 'Send message response')
           currentThread.value!.messages = res.messages
           currentThread.value!.title = res.title ?? currentThread.value!.title
@@ -311,7 +334,7 @@ export function useGeekCatChat() {
           currentThread.value!.updated_at = new Date().toISOString()
           upsertThreadListItem(currentThread.value!)
 
-          const finalUiMessages = transformMessages(res.messages)
+          const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
           messages.value = finalUiMessages
           return
         }
@@ -340,7 +363,7 @@ export function useGeekCatChat() {
   }
 
   async function approveCopy(
-    edited?: { hook: string; body: string; cta: string },
+    edited?: { hook: string; body: string; cta: string } | string,
     feedback?: string
   ): Promise<boolean> {
     if (!currentThread.value) return false
@@ -351,15 +374,20 @@ export function useGeekCatChat() {
         `/api/threads/${currentThread.value.id}/approve`,
         {
           method: 'POST',
-          body: edited
-                ? {
-                    edited_parts: edited,
-                    edited_copy: [edited.hook, edited.body, edited.cta].filter(Boolean).join('\n\n'),
-                    feedback
-                  }
-                : feedback
-                  ? { feedback }
-                  : undefined
+          body: typeof edited === 'string'
+            ? {
+                edited_copy: edited,
+                feedback
+              }
+            : edited
+              ? {
+                  edited_parts: edited,
+                  edited_copy: [edited.hook, edited.body, edited.cta].filter(Boolean).join('\n\n'),
+                  feedback
+                }
+              : feedback
+                ? { feedback }
+                : undefined
         }
       ), 'Approve response')
       currentThread.value.messages = res.messages
@@ -409,31 +437,90 @@ export function useGeekCatChat() {
 
   async function regenerateCopy(instruction?: string): Promise<boolean> {
     if (!currentThread.value) return false
+    const previousThreadMessages = [...currentThread.value.messages]
+    const previousUiMessages = [...messages.value]
+    cancelMessageAnimation()
+    const controller = new AbortController()
+    animationController.value = controller
+
     loading.value = true
     error.value = null
     try {
-      const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
-        `/api/threads/${currentThread.value.id}/regenerate`,
-        {
-          method: 'POST',
-          body: instruction ? { instruction } : undefined
-        }
-      ), 'Regenerate response')
+      const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/regenerate/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction }),
+        signal: controller.signal
+      })
 
-      currentThread.value.messages = res.messages
-      currentThread.value.status = res.status as Thread['status']
-      currentThread.value.pending_copy = res.pending_copy
-      if (res.title) {
-        currentThread.value.title = res.title
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('Streaming endpoint unavailable')
       }
-      currentThread.value.updated_at = new Date().toISOString()
-      messages.value = transformMessages(res.messages)
-      upsertThreadListItem(currentThread.value)
+
+      const assistantStreamId = `temp-regen-${Date.now()}`
+      messages.value = [
+        ...messages.value,
+        {
+          id: assistantStreamId,
+          role: 'assistant',
+          name: 'The Geek Cat',
+          content: '',
+          created_at: new Date().toISOString(),
+          parts: [{ type: 'text' as const, text: '' }]
+        }
+      ]
+
+      await consumeSSEStream(streamResponse.body, async (event, payload) => {
+        if (controller.signal.aborted) return
+
+        if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
+          const delta = String((payload as { text?: unknown }).text ?? '')
+          messages.value = messages.value.map(message => {
+            if (message.id !== assistantStreamId) return message
+            const currentText = message.parts?.[0]?.text ?? ''
+            const nextText = `${currentText}${delta}`
+            return {
+              ...message,
+              content: nextText,
+              parts: [{ type: 'text' as const, text: nextText }]
+            }
+          })
+          return
+        }
+
+        if (event === 'done' && payload && typeof payload === 'object') {
+          const streamedAssistantText = messages.value.find(message => message.id === assistantStreamId)?.parts?.[0]?.text ?? ''
+          const res = parseValidatedResponse(threadActionResponseSchema, payload, 'Regenerate response')
+          currentThread.value!.messages = res.messages
+          currentThread.value!.status = res.status as Thread['status']
+          currentThread.value!.pending_copy = res.pending_copy
+          if (res.title) {
+            currentThread.value!.title = res.title
+          }
+          currentThread.value!.updated_at = new Date().toISOString()
+          messages.value = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
+          upsertThreadListItem(currentThread.value!)
+          return
+        }
+
+        if (event === 'error') {
+          const detail = typeof payload === 'object' && payload && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Streaming failed')
+            : 'Streaming failed'
+          throw new Error(detail)
+        }
+      })
+
       return true
     } catch (errorValue: unknown) {
+      currentThread.value.messages = previousThreadMessages
+      messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to regenerate'
       return false
     } finally {
+      if (animationController.value === controller) {
+        animationController.value = null
+      }
       loading.value = false
     }
   }

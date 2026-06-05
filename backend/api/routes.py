@@ -332,26 +332,84 @@ def _encode_sse(event: str, data: dict[str, Any]) -> str:
 
 async def _sse_send_message(thread_id: str, body: MessageSendRequest):
     try:
-        payload = _send_message_impl(thread_id, body)
-        yield _encode_sse("start", {
-            "status": payload.get("status"),
-            "title": payload.get("title"),
-            "pending_copy": payload.get("pending_copy"),
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": body.user_id,
+            }
+        }
+
+        initial_state = _middleware.before_agent(
+            {
+                "messages": [HumanMessage(content=body.content)],
+                "user_id": body.user_id,
+                "thread_id": thread_id,
+                "approval_status": None,
+                "product_skus": [],
+                "trend_insights": "",
+                "meme_references": [],
+                "draft_copy_de": "",
+                "copy_metadata": {},
+                "human_feedback": None,
+                "publication_result": None,
+                "brand_rules": {},
+                "ltm_context": [],
+                "_analytics_log": [],
+                "_current_node": "",
+            },
+            config,
+        )
+
+        yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
+
+        collected_tokens: list[str] = []
+
+        async for event in _graph.astream_events(initial_state, config=config, version="v2"):
+            kind = event.get("event", "")
+            name = event.get("name", "")
+
+            if kind == "on_chat_model_stream" and name == "ChatOpenAI":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and hasattr(chunk, "content"):
+                    token = chunk.content
+                    if isinstance(token, str) and token:
+                        collected_tokens.append(token)
+                        yield _encode_sse("delta", {"text": token})
+
+        result = None
+        state_snapshot = await _graph.aget_state(config)
+        snap_values = state_snapshot.values if state_snapshot else {}
+
+        result = _middleware.after_agent(snap_values, config)
+
+        existing_thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id,
+            "user_id": body.user_id,
+            "title": None,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "status": "active",
+            "messages": [],
+        }
+        existing_thread = _thread_cache_set(existing_thread)
+
+        payload = _build_thread_payload(existing_thread, snap_values)
+
+        now = _utc_now_iso()
+        cached_thread = _thread_cache_update(thread_id, {
+            "messages": payload["messages"],
+            "status": payload["status"],
+            "title": _derive_thread_title_from_messages(payload["messages"]),
+            "updated_at": now,
         })
+        _save_thread_record(cached_thread)
 
-        assistant_text = ""
-        for message in payload.get("messages", []):
-            if message.get("role") == "assistant":
-                assistant_text = str(message.get("content") or "")
-
-        if assistant_text:
-            chunk_size = 24
-            for i in range(0, len(assistant_text), chunk_size):
-                chunk = assistant_text[i:i + chunk_size]
-                yield _encode_sse("delta", {"text": chunk})
-                await asyncio.sleep(0.01)
-
-        yield _encode_sse("done", payload)
+        yield _encode_sse("done", {
+            "title": cached_thread["title"],
+            "status": payload["status"],
+            "messages": payload["messages"],
+            "pending_copy": payload["pending_copy"],
+        })
     except HTTPException as exc:
         yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
     except Exception as exc:
@@ -360,11 +418,41 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
 
 
 def _extract_messages(state_values: dict) -> list[dict]:
-    """Convert LangGraph AnyMessage list to frontend Message dicts."""
+    """Convert LangGraph AnyMessage list to frontend Message dicts.
+
+    Filters out internal messages: tool results and regeneration prompts.
+    """
     msgs = []
+
+    def _is_internal_user_message(text: str) -> bool:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return False
+
+        internal_prefixes = (
+            "bitte regeneriere den copy",
+            "bitte ueberarbeite den copy",
+            "regenerate new copy",
+            "rewrite your answer",
+            "create a different answer",
+            "i did not like your answer",
+        )
+        return any(normalized.startswith(prefix) for prefix in internal_prefixes)
+
     for i, m in enumerate(state_values.get("messages", [])):
-        role = "user" if getattr(m, "type", "") in ("human", "user") else "assistant"
+        msg_type = getattr(m, "type", "")
+
+        # Skip tool results (internal RAG queries)
+        if msg_type == "tool":
+            continue
+
+        role = "user" if msg_type in ("human", "user") else "assistant"
         content = m.content if isinstance(m.content, str) else str(m.content)
+
+        # Skip internal rewrite/regeneration prompts so they never pollute persisted chat history.
+        if role == "user" and _is_internal_user_message(content):
+            continue
+
         msgs.append({
             "id": str(i),
             "role": role,
@@ -372,6 +460,137 @@ def _extract_messages(state_values: dict) -> list[dict]:
             "created_at": _utc_now_iso(),
         })
     return msgs
+
+
+def _message_signature(message: dict) -> tuple[str, str]:
+    return (
+        str(message.get("role") or ""),
+        str(message.get("content") or "").strip(),
+    )
+
+
+def _merge_thread_messages(existing_messages: list[dict], extracted_messages: list[dict]) -> list[dict]:
+    """Merge graph-extracted messages into stored thread history without losing prior turns.
+
+    LangGraph state may include only a compacted window. We preserve existing persisted
+    history and append only new tail messages by suffix/prefix overlap.
+    """
+    if not existing_messages:
+        return list(extracted_messages)
+    if not extracted_messages:
+        return list(existing_messages)
+
+    max_overlap = min(len(existing_messages), len(extracted_messages))
+    overlap = 0
+
+    for size in range(max_overlap, 0, -1):
+        existing_tail = [_message_signature(m) for m in existing_messages[-size:]]
+        extracted_head = [_message_signature(m) for m in extracted_messages[:size]]
+        if existing_tail == extracted_head:
+            overlap = size
+            break
+
+    if overlap > 0:
+        return [*existing_messages, *extracted_messages[overlap:]]
+
+    existing_signatures = [_message_signature(m) for m in existing_messages]
+    extracted_signatures = [_message_signature(m) for m in extracted_messages]
+
+    # If extracted window already exists contiguously anywhere, keep existing history unchanged.
+    max_window = min(len(existing_signatures), len(extracted_signatures))
+    for size in range(max_window, 0, -1):
+        target = extracted_signatures[:size]
+        for start in range(0, len(existing_signatures) - size + 1):
+            if existing_signatures[start:start + size] == target:
+                if size == len(extracted_signatures):
+                    return list(existing_messages)
+                return [*existing_messages, *extracted_messages[size:]]
+
+    # Fallback: avoid dropping existing history when there is no detectable overlap.
+    merged = list(existing_messages)
+    seen_signatures = set(existing_signatures)
+    last_signature = _message_signature(existing_messages[-1]) if existing_messages else None
+    for message in extracted_messages:
+        signature = _message_signature(message)
+        if signature == last_signature:
+            continue
+        if signature in seen_signatures and str(message.get("role") or "") == "user":
+            # Prevent repeated user prompts from being re-appended by compacted graph windows.
+            continue
+        merged.append(message)
+        seen_signatures.add(signature)
+        last_signature = signature
+    return merged
+
+
+def _filter_internal_user_messages(messages: list[dict]) -> list[dict]:
+    """Remove internal rewrite/regeneration user prompts from persisted thread history."""
+    internal_prefixes = (
+        "bitte regeneriere den copy",
+        "bitte ueberarbeite den copy",
+        "regenerate new copy",
+        "rewrite your answer",
+        "create a different answer",
+        "i did not like your answer",
+    )
+
+    filtered: list[dict] = []
+    for message in messages or []:
+        if (message.get("role") or "") != "user":
+            filtered.append(message)
+            continue
+
+        content = str(message.get("content") or "").strip().lower()
+        if any(content.startswith(prefix) for prefix in internal_prefixes):
+            continue
+        filtered.append(message)
+    return filtered
+
+
+def _strip_leading_user_echo(text: str, messages: list[dict]) -> str:
+    """Remove leading user prompt echoed at start of assistant draft."""
+    content = (text or "").strip()
+    if not content:
+        return content
+
+    user_prompts: list[str] = []
+    for message in messages or []:
+        if (message.get("role") or "") != "user":
+            continue
+        candidate = str(message.get("content") or "").strip()
+        if candidate:
+            user_prompts.append(candidate)
+
+    if not user_prompts:
+        return content
+
+    lines = [line.rstrip() for line in content.splitlines()]
+    if not lines:
+        return content
+
+    first = lines[0].strip().lstrip("-•* ").strip()
+    first_lower = first.lower()
+    for prompt in user_prompts:
+        prompt_lower = prompt.lower()
+        if first_lower == prompt_lower or first_lower.startswith(prompt_lower + ":"):
+            cleaned = "\n".join(lines[1:]).strip()
+            return cleaned or content
+    return content
+
+
+def _normalize_thread_messages(messages: list[dict]) -> list[dict]:
+    """Normalize messages for frontend: strip assistant prompt-echo and collapse immediate duplicates."""
+    normalized: list[dict] = []
+    for message in messages or []:
+        item = dict(message)
+        role = str(item.get("role") or "")
+        if role == "assistant":
+            item["content"] = _strip_leading_user_echo(str(item.get("content") or ""), normalized)
+
+        if normalized and _message_signature(normalized[-1]) == _message_signature(item):
+            continue
+        normalized.append(item)
+    return normalized
 
 
 def _compose_copy_from_parts(parts: dict[str, str], hashtags: list[str] | None = None) -> str:
@@ -489,13 +708,18 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
     elif values:
         status = "active"
 
-    messages = thread.get("messages", [])
+    messages = _filter_internal_user_messages(thread.get("messages", []))
     if values:
-        messages = _extract_messages(values)
+        extracted_messages = _filter_internal_user_messages(_extract_messages(values))
+        messages = _merge_thread_messages(messages, extracted_messages)
+        if draft_copy:
+            draft_copy = _strip_leading_user_echo(draft_copy, messages)
         if draft_copy and status == "awaiting_approval":
-            # Keep a single canonical assistant draft at the end to avoid chatty duplicates.
-            while messages and messages[-1].get("role") == "assistant":
-                messages.pop()
+            # Remove only the last assistant message if it duplicates the draft
+            if messages and messages[-1].get("role") == "assistant":
+                last_content = messages[-1].get("content", "")
+                if last_content == draft_copy:
+                    messages.pop()
 
             messages.append({
                 "id": str(len(messages)),
@@ -510,6 +734,8 @@ def _build_thread_payload(thread: dict, state_values: dict | None = None) -> dic
                 "content": draft_copy,
                 "created_at": _utc_now_iso(),
             })
+
+    messages = _normalize_thread_messages(messages)
 
     pending_copy = None
     if status == "awaiting_approval" and draft_copy:
@@ -547,7 +773,7 @@ def init_routes(
 # ── Chat Threads ──
 
 @router.get("/chat/threads", response_model=list[ThreadListItemResponse])
-def list_threads(user_id: str, q: str = ""):
+async def list_threads(user_id: str, q: str = ""):
     """List all chat threads for a user."""
     records = _list_thread_records(user_id, q)
     if not records and _migrate_single_owner_threads_to_user_id(user_id):
@@ -565,7 +791,7 @@ def list_threads(user_id: str, q: str = ""):
             derived_messages = record.get("messages", [])
             if not derived_messages and _graph:
                 try:
-                    state = _graph.get_state({"configurable": {"thread_id": record["id"]}})
+                    state = await _graph.aget_state({"configurable": {"thread_id": record["id"]}})
                     if state and state.values:
                         derived_messages = _extract_messages(state.values)
                         record["messages"] = derived_messages
@@ -617,7 +843,7 @@ def create_thread(body: ThreadCreateRequest):
 
 
 @router.get("/chat/threads/{thread_id}", response_model=ThreadDetailResponse)
-def get_thread(thread_id: str, user_id: str = ""):
+async def get_thread(thread_id: str, user_id: str = ""):
     """Get a specific thread with its messages from graph state."""
     thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, user_id or None)
     if not thread and user_id and _migrate_single_owner_threads_to_user_id(user_id):
@@ -629,7 +855,7 @@ def get_thread(thread_id: str, user_id: str = ""):
     if _graph:
         try:
             config = {"configurable": {"thread_id": thread_id}}
-            state = _graph.get_state(config)
+            state = await _graph.aget_state(config)
             if state and state.values:
                 payload = _build_thread_payload(thread, state.values)
                 payload_title = _derive_thread_title_from_messages(payload.get("messages", []))
@@ -654,13 +880,13 @@ def get_thread(thread_id: str, user_id: str = ""):
 
 
 @router.post("/chat/threads/{thread_id}/messages", response_model=ThreadActionResponse)
-def send_message(thread_id: str, body: MessageSendRequest):
+async def send_message(thread_id: str, body: MessageSendRequest):
     """Send a user message to the agent and execute the marketing pipeline."""
     if not _graph or not _middleware:
         raise HTTPException(status_code=503, detail="Graph not initialised")
 
     try:
-     return _send_message_impl(thread_id, body)
+        return await _send_message_impl(thread_id, body)
     except HTTPException:
         raise
     except Exception as exc:
@@ -691,7 +917,7 @@ def delete_thread(thread_id: str, user_id: str):
     return {"status": "deleted", "thread_id": thread_id}
 
 
-def _send_message_impl(thread_id: str, body: MessageSendRequest):
+async def _send_message_impl(thread_id: str, body: MessageSendRequest):
     config = {
         "configurable": {
             "thread_id": thread_id,
@@ -723,7 +949,7 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
 
     # ── Graph invocation ──
     try:
-        result = _graph.invoke(initial_state, config=config)
+        result = await _graph.ainvoke(initial_state, config=config)
     except Exception as exc:
         logger.error("graph.invoke failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(exc)}")
@@ -732,7 +958,7 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
     result = _middleware.after_agent(result, config)
 
     # Check if paused at HITL
-    state_snapshot = _graph.get_state(config)
+    state_snapshot = await _graph.aget_state(config)
     snap_values = state_snapshot.values if state_snapshot else result
 
     existing_thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
@@ -767,14 +993,14 @@ def _send_message_impl(thread_id: str, body: MessageSendRequest):
 
 
 @router.get("/chat/threads/{thread_id}/state", response_model=ThreadStateResponse)
-def get_thread_state(thread_id: str, user_id: str = ""):
+async def get_thread_state(thread_id: str, user_id: str = ""):
     """Get the current state of a thread (for polling HITL status)."""
     if not _graph:
         raise HTTPException(status_code=503, detail="Graph not initialised")
 
     config = {"configurable": {"thread_id": thread_id}}
     try:
-        state = _graph.get_state(config)
+        state = await _graph.aget_state(config)
     except Exception:
         raise HTTPException(status_code=404, detail="Thread not found")
 
@@ -800,7 +1026,7 @@ def get_thread_state(thread_id: str, user_id: str = ""):
 
 
 @router.post("/chat/threads/{thread_id}/approve", response_model=ThreadActionResponse)
-def approve_copy(thread_id: str, body: ApprovalRequest):
+async def approve_copy(thread_id: str, body: ApprovalRequest):
     """Approve the generated copy and resume the graph to publisher node."""
     if not _graph:
         raise HTTPException(status_code=503, detail="Graph not initialised")
@@ -808,7 +1034,7 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
     config = {"configurable": {"thread_id": thread_id}}
 
     if body.edited_parts or body.edited_copy:
-        state_snapshot = _graph.get_state(config)
+        state_snapshot = await _graph.aget_state(config)
         values = state_snapshot.values if state_snapshot else {}
         copy_metadata = dict(values.get("copy_metadata") or {})
         hashtags = copy_metadata.get("hashtags", [])
@@ -824,17 +1050,17 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
             }
         copy_metadata["char_count"] = len(next_copy)
 
-        _graph.update_state(config, {
+        await _graph.aupdate_state(config, {
             "draft_copy_de": next_copy,
             "copy_metadata": copy_metadata,
         })
 
     # Update state with approval
-    _graph.update_state(config, {"approval_status": "approved"})
+    await _graph.aupdate_state(config, {"approval_status": "approved"})
 
     # Resume graph execution
     try:
-        result = _graph.invoke(None, config=config)
+        result = await _graph.ainvoke(None, config=config)
     except Exception as exc:
         logger.error("resume after approve failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Resume failed: {str(exc)}")
@@ -875,23 +1101,22 @@ def approve_copy(thread_id: str, body: ApprovalRequest):
 
 
 @router.post("/chat/threads/{thread_id}/reject", response_model=ThreadActionResponse)
-def reject_copy(thread_id: str, body: ApprovalRequest):
+async def reject_copy(thread_id: str, body: ApprovalRequest):
     """Reject the generated copy with optional feedback."""
     if not _graph:
         raise HTTPException(status_code=503, detail="Graph not initialised")
 
     config = {"configurable": {"thread_id": thread_id}}
-    _graph.update_state(config, {
+    await _graph.aupdate_state(config, {
         "approval_status": "rejected",
         "human_feedback": body.feedback,
     })
 
     feedback_text = (body.feedback or "Bitte verfeinere den Text und behebe die genannten Probleme.").strip()
-    regeneration_prompt = f"Bitte ueberarbeite den Copy basierend auf diesem Feedback: {feedback_text}"
 
     # Start a fresh generation pass that carries explicit human feedback context.
     initial_state = {
-        "messages": [HumanMessage(content=regeneration_prompt)],
+        "messages": [],
         "user_id": body.user_id,
         "thread_id": thread_id,
         "approval_status": None,
@@ -912,7 +1137,7 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
         initial_state = _middleware.before_agent(initial_state, config)
 
     try:
-        result = _graph.invoke(initial_state, config=config)
+        result = await _graph.ainvoke(initial_state, config=config)
     except Exception as exc:
         logger.error("resume after reject failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Resume failed: {str(exc)}")
@@ -920,7 +1145,7 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
     if _middleware:
         result = _middleware.after_agent(result, config)
 
-    state_snapshot = _graph.get_state(config)
+    state_snapshot = await _graph.aget_state(config)
     snap_values = state_snapshot.values if state_snapshot else result
 
     logger.info("copy rejected: thread=%s feedback=%s", thread_id, body.feedback)
@@ -963,27 +1188,39 @@ def reject_copy(thread_id: str, body: ApprovalRequest):
 
 
 @router.post("/chat/threads/{thread_id}/regenerate", response_model=ThreadActionResponse)
-def regenerate_copy(thread_id: str, body: RegenerateRequest):
+async def regenerate_copy(thread_id: str, body: RegenerateRequest):
     """Regenerate copy from latest thread context with optional user instruction."""
     if not _graph:
         raise HTTPException(status_code=503, detail="Graph not initialised")
 
+    payload = await _regenerate_impl(thread_id, body)
+    return payload
+
+
+@router.post("/chat/threads/{thread_id}/regenerate/stream")
+def regenerate_copy_stream(thread_id: str, body: RegenerateRequest):
+    """Stream regeneration via SSE."""
+    if not _graph or not _middleware:
+        raise HTTPException(status_code=503, detail="Graph not initialised")
+
+    return StreamingResponse(
+        _sse_regenerate(thread_id, body),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+async def _regenerate_impl(thread_id: str, body: RegenerateRequest) -> dict:
+    """Core regenerate logic, shared by sync and streaming endpoints."""
     config = {"configurable": {"thread_id": thread_id, "user_id": body.user_id}}
     instruction = (body.instruction or "Bitte erstelle eine neue Variante mit anderem Hook und CTA.").strip()
 
-    state_snapshot = _graph.get_state(config)
-    values = state_snapshot.values if state_snapshot else {}
-    prior_feedback = (values.get("human_feedback") or "").strip()
-    prompt = f"Bitte regeneriere den Copy. Zusatzeinweisung: {instruction}"
-    if prior_feedback:
-        prompt += f" Beruecksichtige auch dieses letzte Feedback: {prior_feedback}"
-
     initial_state = {
-        "messages": [HumanMessage(content=prompt)],
+        "messages": [],
         "user_id": body.user_id,
         "thread_id": thread_id,
         "approval_status": None,
-        "human_feedback": prior_feedback or None,
+        "human_feedback": instruction,
         "product_skus": [],
         "trend_insights": "",
         "meme_references": [],
@@ -1000,7 +1237,7 @@ def regenerate_copy(thread_id: str, body: RegenerateRequest):
         initial_state = _middleware.before_agent(initial_state, config)
 
     try:
-        result = _graph.invoke(initial_state, config=config)
+        result = await _graph.ainvoke(initial_state, config=config)
     except Exception as exc:
         logger.error("regenerate failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Regenerate failed: {str(exc)}")
@@ -1008,7 +1245,7 @@ def regenerate_copy(thread_id: str, body: RegenerateRequest):
     if _middleware:
         result = _middleware.after_agent(result, config)
 
-    state_snapshot = _graph.get_state(config)
+    state_snapshot = await _graph.aget_state(config)
     snap_values = state_snapshot.values if state_snapshot else result
 
     thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
@@ -1038,6 +1275,85 @@ def regenerate_copy(thread_id: str, body: RegenerateRequest):
         "pending_copy": payload["pending_copy"],
         "title": cached_thread["title"],
     }
+
+
+async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
+    try:
+        config = {"configurable": {"thread_id": thread_id, "user_id": body.user_id}}
+        instruction = (body.instruction or "Bitte erstelle eine neue Variante mit anderem Hook und CTA.").strip()
+
+        initial_state = {
+            "messages": [],
+            "user_id": body.user_id,
+            "thread_id": thread_id,
+            "approval_status": None,
+            "human_feedback": instruction,
+            "product_skus": [],
+            "trend_insights": "",
+            "meme_references": [],
+            "draft_copy_de": "",
+            "copy_metadata": {},
+            "publication_result": None,
+            "brand_rules": {},
+            "ltm_context": [],
+            "_analytics_log": [],
+            "_current_node": "",
+        }
+
+        if _middleware:
+            initial_state = _middleware.before_agent(initial_state, config)
+
+        yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
+
+        async for event in _graph.astream_events(initial_state, config=config, version="v2"):
+            kind = event.get("event", "")
+            name = event.get("name", "")
+
+            if kind == "on_chat_model_stream" and name == "ChatOpenAI":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and hasattr(chunk, "content"):
+                    token = chunk.content
+                    if isinstance(token, str) and token:
+                        yield _encode_sse("delta", {"text": token})
+
+        state_snapshot = await _graph.aget_state(config)
+        snap_values = state_snapshot.values if state_snapshot else {}
+
+        if _middleware:
+            snap_values = _middleware.after_agent(snap_values, config)
+
+        thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id,
+            "user_id": body.user_id,
+            "title": None,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "status": "active",
+            "messages": [],
+        }
+        thread = _thread_cache_set(thread)
+        payload = _build_thread_payload(thread, snap_values)
+
+        now = _utc_now_iso()
+        cached_thread = _thread_cache_update(thread_id, {
+            "status": payload["status"],
+            "messages": payload["messages"],
+            "title": _derive_thread_title_from_messages(payload["messages"]),
+            "updated_at": now,
+        })
+        _save_thread_record(cached_thread)
+
+        yield _encode_sse("done", {
+            "status": cached_thread["status"],
+            "messages": cached_thread["messages"],
+            "pending_copy": payload["pending_copy"],
+            "title": cached_thread["title"],
+        })
+    except HTTPException as exc:
+        yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+    except Exception as exc:
+        logger.exception("stream regenerate failed")
+        yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
 # ── Long-Term Memory ──

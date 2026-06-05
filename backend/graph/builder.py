@@ -1,8 +1,7 @@
 import logging
-import sqlite3
 from pathlib import Path
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 
 from backend.graph.state import AgentState
@@ -12,20 +11,22 @@ from backend.graph.nodes.publisher import publisher_node
 from backend.graph.conditions import should_approve
 
 logger = logging.getLogger("geekcat.graph.builder")
-_checkpoint_conn: sqlite3.Connection | None = None
+_checkpoint_saver: AsyncSqliteSaver | None = None
+_checkpoint_cm = None
 
 
-def _get_checkpoint_saver() -> SqliteSaver:
-    global _checkpoint_conn
-    if _checkpoint_conn is None:
+async def _get_checkpoint_saver() -> AsyncSqliteSaver:
+    global _checkpoint_saver, _checkpoint_cm
+    if _checkpoint_saver is None:
         checkpoint_path = Path(__file__).resolve().parents[2] / "threads.db"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        _checkpoint_conn = sqlite3.connect(checkpoint_path, check_same_thread=False)
-        _checkpoint_conn.execute("PRAGMA journal_mode=WAL")
-    return SqliteSaver(_checkpoint_conn)
+        _checkpoint_cm = AsyncSqliteSaver.from_conn_string(str(checkpoint_path))
+        _checkpoint_saver = await _checkpoint_cm.__aenter__()
+        await _checkpoint_saver.setup()
+    return _checkpoint_saver
 
 
-def build_marketing_graph(
+async def build_marketing_graph(
     middleware: object | None = None,
 ) -> StateGraph:
     """Build the multi-agent marketing pipeline StateGraph.
@@ -67,7 +68,7 @@ def build_marketing_graph(
     builder.add_edge("publisher", END)
 
     # ── Compile with checkpointer + HITL interrupt ──
-    checkpointer = _get_checkpoint_saver()
+    checkpointer = await _get_checkpoint_saver()
     graph = builder.compile(
         checkpointer=checkpointer,
         interrupt_before=["publisher"],

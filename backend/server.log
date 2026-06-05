@@ -30,3 +30,27 @@ INFO:     127.0.0.1:51653 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c
 INFO:     127.0.0.1:50707 - "GET /api/chat/threads?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
 INFO:     127.0.0.1:50707 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
 INFO:     127.0.0.1:60196 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54492 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "GET /api/chat/threads?user_id=anon_30370c91-8807-4c5e-9454-e8fb1d70ddae HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_e9c8a3c6-afac-439b-a90b-3b57f92401ec HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "GET /api/chat/threads?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "POST /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9/regenerate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53113 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55795 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60017 - "GET /api/chat/threads?user_id=anon_c9553acd-7209-46de-9072-34fdc40dbd39 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60017 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_0223c2d4-86e5-4de8-acc1-a3162f552250 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60017 - "GET /api/chat/threads?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60017 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55033 - "GET /api/chat/threads?user_id=anon_5fe1e3f7-f6b7-4f9a-aede-4e0fe892d5c6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55033 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_ac54f866-d247-4a75-9d7f-5225dd166d5a HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55033 - "GET /api/chat/threads?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55033 - "GET /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9?user_id=anon_948a09d9-0e47-48a8-8aa6-e44e75761e9c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55033 - "POST /api/chat/threads/22524d77-71a3-4a05-b5d2-4106c8f12bb9/regenerate/stream HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:59454 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61688 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59054 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65195 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58705 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63112 - "POST /api/chat/threads/00000000-0000-0000-0000-000000000000/regenerate/stream HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56047 - "POST /api/chat/threads/00000000-0000-0000-0000-000000000000/regenerate/stream HTTP/1.1" 404 Not Found
