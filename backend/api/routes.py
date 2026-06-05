@@ -330,6 +330,23 @@ def _encode_sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _stream_chunks(text: str, chunk_size: int = 32) -> list[str]:
+    content = (text or "")
+    if not content:
+        return []
+    return [content[i:i + chunk_size] for i in range(0, len(content), chunk_size)]
+
+
+def _latest_assistant_text(messages: list[dict]) -> str:
+    for message in reversed(messages or []):
+        if str(message.get("role") or "") != "assistant":
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            return content
+    return ""
+
+
 async def _sse_send_message(thread_id: str, body: MessageSendRequest):
     try:
         config = {
@@ -350,25 +367,26 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
 
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
-        collected_tokens: list[str] = []
-
         async for event in _graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
             name = event.get("name", "")
+            metadata = event.get("metadata") or {}
+            node_name = str(metadata.get("langgraph_node") or "")
 
             if kind == "on_chat_model_stream" and name == "ChatOpenAI":
+                # Stream only the copywriter model output when node metadata is available.
+                if node_name and node_name != "copywriter":
+                    continue
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and hasattr(chunk, "content"):
                     token = chunk.content
                     if isinstance(token, str) and token:
-                        collected_tokens.append(token)
                         yield _encode_sse("delta", {"text": token})
 
-        result = None
         state_snapshot = await _graph.aget_state(config)
         snap_values = state_snapshot.values if state_snapshot else {}
 
-        result = _middleware.after_agent(snap_values, config)
+        _middleware.after_agent(snap_values, config)
 
         existing_thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
             "id": thread_id,

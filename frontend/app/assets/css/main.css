@@ -65,7 +65,8 @@ html.dark .shiki span {
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--chat-bg-secondary);
 }
 
@@ -75,7 +76,8 @@ html.dark .shiki span {
   padding: 0.9rem 0.65rem;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .left-brand {
@@ -342,8 +344,7 @@ html.dark .shiki span {
 }
 
 .chat-composer-shell {
-  position: sticky;
-  bottom: 0;
+  flex-shrink: 0;
   z-index: 20;
   border-top: 0;
   background: linear-gradient(to top, var(--chat-bg-secondary) 74%, rgb(247 247 248 / 0%));

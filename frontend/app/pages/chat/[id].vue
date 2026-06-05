@@ -153,6 +153,26 @@ watch(assistantResponsePreview, () => {
   // Keep helper state lightweight; per-message actions should not rewrite prior responses.
 })
 
+const scrollAreaRef = ref<HTMLElement | null>(null)
+const scrollBottomRef = ref<HTMLElement | null>(null)
+
+function scrollToBottom() {
+  const sentinel = scrollBottomRef.value
+  if (sentinel) {
+    sentinel.scrollIntoView({ block: 'end' })
+    return
+  }
+  const el = scrollAreaRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+watch(
+  () => unref(chat.messages).map(m => m.parts?.[0]?.text ?? m.content ?? '').join(''),
+  () => nextTick(scrollToBottom)
+)
+
+onMounted(() => nextTick(scrollToBottom))
+
 const debugState = computed(() => JSON.stringify({
   chatId,
   loading: isLoading.value,
@@ -203,7 +223,7 @@ const debugState = computed(() => JSON.stringify({
         </div>
       </div>
 
-      <div class="chat-scroll-area">
+      <div ref="scrollAreaRef" class="chat-scroll-area">
         <div
           v-if="!isLoading && !threadMessages.length"
           class="mx-auto w-full max-w-3xl rounded-lg border border-default bg-muted/25 px-4 py-3"
@@ -224,6 +244,7 @@ const debugState = computed(() => JSON.stringify({
             </div>
 
             <div v-else class="chat-assistant-block">
+              <!-- No text yet: show only the loading indicator -->
               <template v-if="isStreamingPlaceholder(msg)">
                 <div data-testid="chat-processing" class="chat-response-pending">
                   <div class="chat-thinking-indicator">
@@ -232,6 +253,19 @@ const debugState = computed(() => JSON.stringify({
                   <p class="chat-processing-text">{{ loadingStatusText }}</p>
                 </div>
               </template>
+
+              <!-- Text is arriving: show loading indicator above the partial text until done -->
+              <template v-else-if="isSending && idx === latestAssistantIndex">
+                <div data-testid="chat-processing" class="chat-response-pending mb-2">
+                  <div class="chat-thinking-indicator">
+                    <span class="dot" /><span class="dot" /><span class="dot" />
+                  </div>
+                  <p class="chat-processing-text">{{ loadingStatusText }}</p>
+                </div>
+                <p class="chat-assistant-text">{{ messageText(msg) }}</p>
+              </template>
+
+              <!-- Stream complete: show final plain text only -->
               <p v-else class="chat-assistant-text">{{ messageText(msg) }}</p>
 
               <div
@@ -293,9 +327,8 @@ const debugState = computed(() => JSON.stringify({
             </div>
           </div>
         </div>
+        <div ref="scrollBottomRef" class="h-px" aria-hidden="true" />
       </div>
-
-      <!-- Input -->
       <div class="chat-composer-shell">
         <div class="mx-auto w-full max-w-3xl">
           <form class="chat-composer-form" @submit.prevent="send">

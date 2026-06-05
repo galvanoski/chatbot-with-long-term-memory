@@ -23,8 +23,9 @@ export default defineEventHandler(async (event) => {
   }
 
   setHeader(event, 'Content-Type', 'text/event-stream')
-  setHeader(event, 'Cache-Control', 'no-cache')
+  setHeader(event, 'Cache-Control', 'no-cache, no-transform')
   setHeader(event, 'Connection', 'keep-alive')
+  setHeader(event, 'X-Accel-Buffering', 'no')
 
   const reader = upstream.body.getReader()
   const stream = new ReadableStream({

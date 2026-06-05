@@ -314,7 +314,21 @@ export function useGeekCatChat() {
         }
 
         if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
-          // Keep the inline loading placeholder visible until the final normalized response arrives.
+          const deltaText = String((payload as { text?: unknown }).text ?? '')
+          if (!deltaText) {
+            return
+          }
+
+          messages.value = messages.value.map((message) => {
+            if (message.id !== assistantStreamId) return message
+            const current = message.parts?.[0]?.text ?? message.content ?? ''
+            const next = `${current}${deltaText}`
+            return {
+              ...message,
+              content: next,
+              parts: [{ type: 'text' as const, text: next }]
+            }
+          })
           return
         }
 
