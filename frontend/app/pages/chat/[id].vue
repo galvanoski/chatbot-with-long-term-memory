@@ -8,6 +8,7 @@ const initialPromptSent = ref(false)
 const regenerateProcessing = ref(false)
 
 const chat = useGeekCatChat()
+const messageFeedback = chat.messageFeedback
 
 await chat.loadThread(chatId)
 
@@ -36,15 +37,6 @@ onMounted(async () => {
   await navigateTo(`/chat/${chatId}`, { replace: true })
 })
 
-async function handleApprove(message: string) {
-  await chat.approveCopy(message || assistantResponsePreview.value, 'thumbs_up')
-}
-
-async function handleReject(message: string) {
-  const note = (message || assistantResponsePreview.value || 'thumbs_down').slice(0, 500)
-  await chat.rejectCopy(note)
-}
-
 async function handleRegenerate(message: string) {
   regenerateProcessing.value = true
   try {
@@ -59,24 +51,23 @@ async function copyMessageToClipboard(text: string) {
   await navigator.clipboard.writeText(text)
 }
 
-async function handleThumbsUp(msg: any) {
-  if (!currentThread.value) return
-  try {
-    await $fetch(`/api/threads/${currentThread.value.id}/approve`, {
-      method: 'POST',
-      body: { feedback: 'thumbs_up' }
-    })
-  } catch {}
-}
-
-async function handleThumbsDown(msg: any) {
-  if (!currentThread.value) return
-  try {
-    await $fetch(`/api/threads/${currentThread.value.id}/reject`, {
-      method: 'POST',
-      body: { feedback: 'thumbs_down' }
-    })
-  } catch {}
+async function sendFeedback(msg: any, rating: 'up' | 'down') {
+  const toast = useToast()
+  const current = chat.messageFeedback.value[msg?.id]
+  if (current === rating) {
+    chat.setMessageFeedback(msg.id, null)
+    toast.add({ title: 'Bewertung zurückgesetzt', duration: 2000 })
+    return
+  }
+  chat.setMessageFeedback(msg.id, rating)
+  const content = messageText(msg) || assistantResponsePreview.value || ''
+  const ok = rating === 'up' ? await chat.approveCopy(content) : await chat.rejectCopy(content)
+  if (ok) {
+    toast.add({ title: 'Feedback gespeichert', description: rating === 'up' ? 'Positive Bewertung' : 'Negative Bewertung', duration: 3000 })
+  } else {
+    chat.setMessageFeedback(msg.id, current || null)
+    toast.add({ title: 'Fehler', description: unref(chat.error) || 'Feedback konnte nicht gespeichert werden', color: 'error', duration: 4000 })
+  }
 }
 
 const input = ref('')
@@ -283,8 +274,9 @@ const debugState = computed(() => JSON.stringify({
                     data-testid="thumbs-up"
                     type="button"
                     class="chat-action-btn"
+                    :class="{ 'chat-action-btn-active': messageFeedback[msg.id] === 'up' }"
                     :disabled="isLoading || isSending"
-                    @click="handleApprove(messageText(msg))"
+                    @click="sendFeedback(msg, 'up')"
                     aria-label="Genehmigen"
                   >
                     <UIcon name="i-lucide-thumbs-up" class="size-4" />
@@ -295,7 +287,8 @@ const debugState = computed(() => JSON.stringify({
                     data-testid="thumbs-down"
                     type="button"
                     class="chat-action-btn"
-                    @click="handleReject(messageText(msg))"
+                    :class="{ 'chat-action-btn-active': messageFeedback[msg.id] === 'down' }"
+                    @click="sendFeedback(msg, 'down')"
                     aria-label="Ablehnen"
                   >
                     <UIcon name="i-lucide-thumbs-down" class="size-4" />

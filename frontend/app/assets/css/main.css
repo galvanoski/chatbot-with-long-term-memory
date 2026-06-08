@@ -291,6 +291,11 @@ html.dark .shiki span {
   opacity: 0.55;
 }
 
+.chat-action-btn-active {
+  color: #818cf8;
+  background: #eef2ff;
+}
+
 .chat-inline-sources {
   display: inline-flex;
   align-items: center;

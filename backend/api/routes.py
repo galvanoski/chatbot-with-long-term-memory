@@ -1057,69 +1057,36 @@ async def get_thread_state(thread_id: str, user_id: str = ""):
 
 @router.post("/chat/threads/{thread_id}/approve", response_model=ThreadActionResponse)
 async def approve_copy(thread_id: str, body: ApprovalRequest):
-    """Approve the generated copy and resume the graph to publisher node."""
-    if not _graph:
-        raise HTTPException(status_code=503, detail="Graph not initialised")
+    """Save a positive evaluation (thumbs-up) as a retrievable memory."""
+    thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
 
-    config = {"configurable": {"thread_id": thread_id}}
-
-    if body.edited_parts or body.edited_copy:
-        state_snapshot = await _graph.aget_state(config)
-        values = state_snapshot.values if state_snapshot else {}
-        copy_metadata = dict(values.get("copy_metadata") or {})
-        hashtags = copy_metadata.get("hashtags", [])
-
-        edited_parts = body.edited_parts or {}
-        next_copy = body.edited_copy or _compose_copy_from_parts(edited_parts, hashtags)
-
-        if edited_parts:
-            copy_metadata["parts"] = {
-                "hook": edited_parts.get("hook", ""),
-                "body": edited_parts.get("body", ""),
-                "cta": edited_parts.get("cta", ""),
-            }
-        copy_metadata["char_count"] = len(next_copy)
-
-        await _graph.aupdate_state(config, {
-            "draft_copy_de": next_copy,
-            "copy_metadata": copy_metadata,
-        })
-
-    # Update state with approval
-    await _graph.aupdate_state(config, {"approval_status": "approved"})
-
-    # Resume graph execution
-    try:
-        result = await _graph.ainvoke(None, config=config)
-    except Exception as exc:
-        logger.error("resume after approve failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Resume failed: {str(exc)}")
-
-    messages = _extract_messages(result)
-    thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
-        "id": thread_id,
-        "user_id": body.user_id,
-        "title": None,
-        "created_at": _utc_now_iso(),
-        "updated_at": _utc_now_iso(),
-        "status": "published",
-        "messages": [],
-    }
-    thread = _thread_cache_set(thread)
-    if not messages:
+    copy_text = (body.edited_copy or "").strip()
+    if not copy_text:
         messages = thread.get("messages", [])
-
-    # Update thread store
-    now = _utc_now_iso()
-    cached_thread = _thread_cache_update(thread_id, {
-        "status": "published",
-        "messages": messages,
-        "title": _derive_thread_title_from_messages(messages),
-        "updated_at": now,
-    })
-    _save_thread_record(cached_thread)
+        if messages:
+            last_assistant = [m for m in messages if m.get("role") == "assistant"]
+            if last_assistant:
+                copy_text = last_assistant[-1].get("content", "").strip()
 
     if _memory:
+        try:
+            coll = _memory.ltm.vector_store.get_user_collection(body.user_id)
+            existing = coll.get(where={"type": "user_evaluation", "thread_id": thread_id})
+            if existing and existing.get("ids"):
+                for doc_id in existing["ids"]:
+                    _memory.ltm.delete(body.user_id, doc_id)
+        except Exception:
+            logger.warning("approve: failed to clear prior evaluations", exc_info=True)
+
+        text_to_save = copy_text or "thumbs_up"
+        _memory.ltm.save(body.user_id, f"Positive Bewertung: {text_to_save}", {
+            "type": "user_evaluation",
+            "thread_id": thread_id,
+            "rating": "up",
+        })
+
         _memory.save_analytics(body.user_id, "human_feedback", {
             "thread_id": thread_id,
             "rating": "up",
@@ -1127,93 +1094,68 @@ async def approve_copy(thread_id: str, body: ApprovalRequest):
             "edited": bool(body.edited_copy or body.edited_parts),
         })
 
-    return {"status": "published", "messages": messages}
-
-
-@router.post("/chat/threads/{thread_id}/reject", response_model=ThreadActionResponse)
-async def reject_copy(thread_id: str, body: ApprovalRequest):
-    """Reject the generated copy with optional feedback."""
-    if not _graph:
-        raise HTTPException(status_code=503, detail="Graph not initialised")
-
-    config = {"configurable": {"thread_id": thread_id}}
-    await _graph.aupdate_state(config, {
-        "approval_status": "rejected",
-        "human_feedback": body.feedback,
-    })
-
-    feedback_text = (body.feedback or "Bitte verfeinere den Text und behebe die genannten Probleme.").strip()
-
-    # Start a fresh generation pass that carries explicit human feedback context.
-    initial_state = {
-        "messages": [],
-        "user_id": body.user_id,
-        "thread_id": thread_id,
-        "approval_status": None,
-        "human_feedback": feedback_text,
-        "product_skus": [],
-        "trend_insights": "",
-        "meme_references": [],
-        "draft_copy_de": "",
-        "copy_metadata": {},
-        "publication_result": None,
-        "brand_rules": {},
-        "ltm_context": [],
-        "_analytics_log": [],
-        "_current_node": "",
-    }
-
-    if _middleware:
-        initial_state = _middleware.before_agent(initial_state, config)
-
-    try:
-        result = await _graph.ainvoke(initial_state, config=config)
-    except Exception as exc:
-        logger.error("resume after reject failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Resume failed: {str(exc)}")
-
-    if _middleware:
-        result = _middleware.after_agent(result, config)
-
-    state_snapshot = await _graph.aget_state(config)
-    snap_values = state_snapshot.values if state_snapshot else result
-
-    logger.info("copy rejected: thread=%s feedback=%s", thread_id, body.feedback)
-    thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
-        "id": thread_id,
-        "user_id": body.user_id,
-        "title": None,
-        "created_at": _utc_now_iso(),
-        "updated_at": _utc_now_iso(),
-        "status": "active",
-        "messages": [],
-    }
-    thread = _thread_cache_set(thread)
-
-    payload = _build_thread_payload(thread, snap_values)
-
-    # Update thread store
     now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
-        "status": payload["status"],
-        "messages": payload["messages"],
-        "title": _derive_thread_title_from_messages(payload["messages"]),
+        "status": "active",
         "updated_at": now,
     })
     _save_thread_record(cached_thread)
 
+    return {
+        "status": "active",
+        "messages": cached_thread.get("messages", []),
+        "pending_copy": cached_thread.get("pending_copy"),
+    }
+
+
+@router.post("/chat/threads/{thread_id}/reject", response_model=ThreadActionResponse)
+async def reject_copy(thread_id: str, body: ApprovalRequest):
+    """Save a negative evaluation (thumbs-down) as a retrievable memory."""
+    thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
     if _memory:
+        try:
+            coll = _memory.ltm.vector_store.get_user_collection(body.user_id)
+            existing = coll.get(where={"type": "user_evaluation", "thread_id": thread_id})
+            if existing and existing.get("ids"):
+                for doc_id in existing["ids"]:
+                    _memory.ltm.delete(body.user_id, doc_id)
+        except Exception:
+            logger.warning("reject: failed to clear prior evaluations", exc_info=True)
+
+        copy_text = (body.feedback or "").strip()
+        if not copy_text:
+            messages = thread.get("messages", [])
+            if messages:
+                last_assistant = [m for m in messages if m.get("role") == "assistant"]
+                if last_assistant:
+                    copy_text = last_assistant[-1].get("content", "").strip()
+
+        _memory.ltm.save(body.user_id, f"Negative Bewertung: {copy_text or 'thumbs_down'}", {
+            "type": "user_evaluation",
+            "thread_id": thread_id,
+            "rating": "down",
+        })
+
         _memory.save_analytics(body.user_id, "human_feedback", {
             "thread_id": thread_id,
             "rating": "down",
             "feedback": body.feedback or "thumbs_down",
         })
 
+    now = _utc_now_iso()
+    cached_thread = _thread_cache_update(thread_id, {
+        "status": "active",
+        "updated_at": now,
+    })
+    _save_thread_record(cached_thread)
+
     return {
-        "status": cached_thread["status"],
-        "messages": cached_thread["messages"],
-        "pending_copy": payload["pending_copy"],
-        "title": cached_thread["title"],
+        "status": "active",
+        "messages": cached_thread.get("messages", []),
+        "pending_copy": cached_thread.get("pending_copy"),
     }
 
 

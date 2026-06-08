@@ -169,6 +169,16 @@ export function useGeekCatChat() {
   const isAwaitingApproval = computed(() => currentThread.value?.status === 'awaiting_approval')
   const pendingCopy = computed(() => currentThread.value?.pending_copy)
 
+  const messageFeedback = useState<Record<string, 'up' | 'down'>>('geekcat-message-feedback', () => ({}))
+
+  function setMessageFeedback(id: string, rating: 'up' | 'down' | null) {
+    if (rating === null) {
+      delete messageFeedback.value[id]
+    } else {
+      messageFeedback.value[id] = rating
+    }
+  }
+
   function upsertThreadListItem(thread: Thread) {
     const index = threads.value.findIndex(t => t.id === thread.id)
     const next: ThreadListItem = {
@@ -547,6 +557,8 @@ export function useGeekCatChat() {
     polling,
     isAwaitingApproval,
     pendingCopy,
+    messageFeedback,
+    setMessageFeedback,
     fetchThreads,
     deleteThread,
     createThread,

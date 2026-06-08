@@ -106,6 +106,10 @@ class ChromaStore:
         coll = self.get_user_collection(user_id)
         coll.delete(ids=[doc_id])
 
+    def delete_memories_by_metadata(self, user_id: str, where: dict[str, Any]) -> None:
+        coll = self.get_user_collection(user_id)
+        coll.delete(where=where)
+
     def list_memories(
         self,
         user_id: str,
