@@ -222,7 +222,7 @@ const debugState = computed(() => JSON.stringify({
 
       <div class="chat-topbar">
         <div class="chat-topbar-inner">
-          <h1 class="chat-topbar-title">ChatGPT</h1>
+          <h1 class="chat-topbar-title">The Geek Cat</h1>
         </div>
       </div>
 
@@ -318,11 +318,6 @@ const debugState = computed(() => JSON.stringify({
                     <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
                   </button>
                 </UTooltip>
-                <UTooltip text="Weitere Aktionen">
-                  <button type="button" class="chat-action-btn" aria-label="Weitere Aktionen">
-                    <UIcon name="i-lucide-ellipsis" class="size-4" />
-                  </button>
-                </UTooltip>
 
                 <div v-if="idx === latestAssistantIndex && pending?.sources?.length" class="chat-inline-sources" data-testid="chat-sources">
                   <a
@@ -354,7 +349,6 @@ const debugState = computed(() => JSON.stringify({
       <div class="chat-composer-shell">
         <div class="mx-auto w-full max-w-3xl space-y-2">
           <form class="chat-composer-form" @submit.prevent="send">
-            <UButton icon="i-lucide-plus" variant="ghost" color="neutral" class="rounded-full" />
             <UButton
               icon="i-lucide-wand-sparkles"
               variant="ghost"
@@ -374,7 +368,6 @@ const debugState = computed(() => JSON.stringify({
               :disabled="isLoading || isSending"
               @keydown.enter.exact.prevent="send"
             />
-            <UButton icon="i-lucide-mic" variant="ghost" color="neutral" class="rounded-full" />
             <UButton
               data-testid="chat-submit"
               icon="i-lucide-arrow-up"

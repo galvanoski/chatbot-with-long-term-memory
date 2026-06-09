@@ -42,12 +42,6 @@ async function removeThread(threadId: string) {
 
 const quickLinks = [
   { label: 'New chat', icon: 'i-lucide-square-pen', to: '/' },
-  { label: 'Search chats', icon: 'i-lucide-search', to: '/' },
-  { label: 'Library', icon: 'i-lucide-book-open', to: '/' },
-  { label: 'Projects', icon: 'i-lucide-folder', to: '/' },
-  { label: 'Apps', icon: 'i-lucide-layout-grid', to: '/' },
-  { label: 'Codex', icon: 'i-lucide-cpu', to: '/' },
-  { label: 'More', icon: 'i-lucide-ellipsis', to: '/' }
 ]
 
 defineShortcuts({
