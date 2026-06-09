@@ -426,6 +426,16 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
+IMAGE_PROMPT_SYSTEM_PROMPT = (
+    "You are a creative image prompt generator for 'The Geek Cat' brand \u2014 "
+    "a German print-on-demand store selling sarcastic IT/cat-themed merchandise. "
+    "Generate a detailed image generation prompt suitable for Midjourney / DALL-E / Stable Diffusion. "
+    "The prompt must be in English, describe a logo or illustration style, include visual details "
+    "(colors, composition, style), and fit on merchandise (t-shirts, mugs, stickers). "
+    "Output ONLY the prompt text, no explanations, no markdown."
+)
+
+
 async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
     try:
         config = {
@@ -435,7 +445,9 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
             }
         }
 
-        initial_state = _middleware.before_agent(
+        # Build a clean state via middleware (brand rules + LTM context only,
+        # no conversation state from graph checkpoint)
+        clean_state = _middleware.before_agent(
             {
                 "messages": [HumanMessage(content=body.instruction)],
                 "user_id": body.user_id,
@@ -448,24 +460,33 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
 
         yield _encode_sse("start", {"status": "active"})
 
-        async for event in _graph.astream_events(initial_state, config=config, version="v2"):
-            kind = event.get("event", "")
-            name = event.get("name", "")
-            metadata = event.get("metadata") or {}
-            node_name = str(metadata.get("langgraph_node") or "")
+        llm = ChatOpenAI(
+            model="openai/gpt-5-mini",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ["OPENROUTER_API_KEY"],
+        )
 
-            if kind == "on_chat_model_stream" and name == "ChatOpenAI":
-                if node_name and node_name != "image_prompt_generator":
-                    continue
-                chunk = event.get("data", {}).get("chunk")
-                if chunk and hasattr(chunk, "content"):
-                    token = chunk.content
-                    if isinstance(token, str) and token:
-                        yield _encode_sse("delta", {"text": token})
+        messages: list = [
+            SystemMessage(content=IMAGE_PROMPT_SYSTEM_PROMPT),
+            HumanMessage(content=body.instruction),
+        ]
 
-        state_snapshot = await _graph.aget_state(config)
-        snap_values = state_snapshot.values if state_snapshot else {}
-        raw_result = (snap_values.get("image_prompt_result") or "").strip()
+        # Apply before_model middleware (injects brand rules, LTM context)
+        messages = _middleware.before_model(messages, clean_state)
+
+        # Stream tokens directly from the LLM (no graph state contamination)
+        result_parts: list[str] = []
+        async for chunk in llm.astream(messages):
+            content = chunk.content if hasattr(chunk, "content") else ""
+            if isinstance(content, str) and content:
+                result_parts.append(content)
+                yield _encode_sse("delta", {"text": content})
+
+        raw_result = "".join(result_parts).strip()
+
+        # Apply after_model middleware
+        response = type("Response", (), {"content": raw_result})()
+        response = _middleware.after_model(response, clean_state)
 
         thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
             "id": thread_id,
@@ -479,10 +500,11 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         thread = _thread_cache_set(thread)
 
         now = _utc_now_iso()
+        user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
         msg_id = str(uuid.uuid4())
         content = f"🎨 **Image Prompt:**\n\n{raw_result}" if raw_result else "Could not generate image prompt."
         assistant_msg = {"id": msg_id, "role": "assistant", "content": content, "created_at": now}
-        thread["messages"] = list(thread.get("messages", [])) + [assistant_msg]
+        thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
 
         cached_thread = _thread_cache_update(thread_id, {
             "messages": thread["messages"],
