@@ -1,17 +1,15 @@
-import { assertOptionalString, assertUuid, backendUnavailableError } from '../../../../utils/requestValidation'
+import { assertUuid, backendUnavailableError } from '../../../../utils/requestValidation'
 
 export default defineEventHandler(async (event) => {
   const { apiBaseUrl } = useRuntimeConfig().public
   const threadId = assertUuid(getRouterParam(event, 'id'), 'threadId')
   const userId = getUserId(event)
   const body = await readBody(event)
-  const instruction = assertOptionalString(body?.instruction, 'instruction', 10000)
+  const instruction = String(body?.instruction || '').slice(0, 2000) || 'Generate SEO metadata for my product'
 
-  const upstream = await fetch(`${apiBaseUrl}/api/chat/threads/${threadId}/regenerate/stream`, {
+  const upstream = await fetch(`${apiBaseUrl}/api/chat/threads/${threadId}/seo/stream`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       user_id: userId,
       instruction
@@ -23,8 +21,9 @@ export default defineEventHandler(async (event) => {
   }
 
   setHeader(event, 'Content-Type', 'text/event-stream')
-  setHeader(event, 'Cache-Control', 'no-cache')
+  setHeader(event, 'Cache-Control', 'no-cache, no-transform')
   setHeader(event, 'Connection', 'keep-alive')
+  setHeader(event, 'X-Accel-Buffering', 'no')
 
   const reader = upstream.body.getReader()
   const stream = new ReadableStream({

@@ -11,6 +11,15 @@ export interface Message {
     cost: number
   }
   rag_trace?: Array<Record<string, unknown>> | null
+  seo_metadata?: {
+    seo_title?: string
+    focus_keyword?: string
+    secondary_keywords?: string[]
+    meta_description?: string
+    seo_description?: string
+    url_slug?: string
+    alt_text?: string
+  } | null
 }
 
 export interface UIMessage {
@@ -31,6 +40,15 @@ export interface UIMessage {
     cost: number
   }
   rag_trace?: Array<Record<string, unknown>> | null
+  seo_metadata?: {
+    seo_title?: string
+    focus_keyword?: string
+    secondary_keywords?: string[]
+    meta_description?: string
+    seo_description?: string
+    url_slug?: string
+    alt_text?: string
+  } | null
 }
 
 export interface Thread {

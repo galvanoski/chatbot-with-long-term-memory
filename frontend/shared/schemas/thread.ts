@@ -7,6 +7,16 @@ export const tokenUsageSchema = z.object({
   cost: z.number()
 })
 
+export const seoMetadataSchema = z.object({
+  seo_title: z.string().optional(),
+  focus_keyword: z.string().optional(),
+  secondary_keywords: z.array(z.string()).optional(),
+  meta_description: z.string().optional(),
+  seo_description: z.string().optional(),
+  url_slug: z.string().optional(),
+  alt_text: z.string().optional(),
+})
+
 export const ragTraceEventSchema = z.object({
   stage: z.string(),
   timestamp: z.number().optional(),
@@ -39,6 +49,12 @@ export const ragTraceEventSchema = z.object({
   elapsed_seconds: z.number().optional(),
   message_count: z.number().optional(),
   user_id: z.string().optional(),
+  seo_title: z.string().optional(),
+  focus_keyword: z.string().optional(),
+  secondary_keywords: z.array(z.string()).optional(),
+  meta_description: z.string().optional(),
+  url_slug: z.string().optional(),
+  alt_text: z.string().optional(),
 }).catchall(z.unknown())
 
 export const threadMessageSchema = z.object({
@@ -48,7 +64,8 @@ export const threadMessageSchema = z.object({
   created_at: z.string(),
   pending_approval: z.boolean().optional(),
   usage: tokenUsageSchema.nullish(),
-  rag_trace: z.array(ragTraceEventSchema).nullish()
+  rag_trace: z.array(ragTraceEventSchema).nullish(),
+  seo_metadata: seoMetadataSchema.nullish()
 })
 
 export const threadSourceSchema = z.object({

@@ -1,4 +1,5 @@
 import datetime as dt
+import html as html_mod
 import re
 import asyncio
 import json
@@ -9,6 +10,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -24,6 +26,7 @@ from backend.api.schemas import (
     DeleteThreadResponse,
     DeleteMemoryResponse,
     ImagePromptRequest,
+    SEORequest,
     MemoryItem,
     MemoryListResponse,
     MessageSendRequest,
@@ -39,6 +42,7 @@ from backend.api.schemas import (
 from backend.graph.tools.rag import load_products_to_catalog
 from backend.memory.manager import MemoryManager
 from backend.middleware.geekcat import GeekCatMiddleware
+from backend.graph.nodes.seo import SEO_SYSTEM_PROMPT
 from backend.tracking.rag_trace import get_rag_trace
 from backend.tracking.usage import UsageTracker, extract_usage_from_llm_output
 
@@ -352,6 +356,82 @@ def _latest_assistant_text(messages: list[dict]) -> str:
     return ""
 
 
+def _html_to_text(html_str: str) -> str:
+    """Convert HTML to clean plain text."""
+    from html.parser import HTMLParser
+
+    class _HTMLStripper(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self._result: list[str] = []
+            self._skip = False
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            tag_lower = tag.lower()
+            if tag_lower in ("script", "style"):
+                self._skip = True
+            if tag_lower in ("p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"):
+                self._result.append("\n")
+            if tag_lower == "td":
+                self._result.append(" ")
+
+        def handle_endtag(self, tag: str) -> None:
+            tag_lower = tag.lower()
+            if tag_lower in ("script", "style"):
+                self._skip = False
+            if tag_lower in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "div"):
+                self._result.append("\n")
+
+        def handle_data(self, data: str) -> None:
+            if not self._skip:
+                self._result.append(data)
+
+        def handle_entityref(self, name: str) -> None:
+            if not self._skip:
+                self._result.append(f"&{name};")
+
+        def handle_charref(self, name: str) -> None:
+            if not self._skip:
+                self._result.append(f"&#{name};")
+
+    stripper = _HTMLStripper()
+    stripper.feed(html_str)
+    text = "".join(stripper._result)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r" +\n", "\n", text)
+    text = re.sub(r"\n +", "\n", text)
+    return text.strip()
+
+
+def _extract_urls(text: str) -> list[str]:
+    """Extract all URLs from a text string."""
+    url_pattern = re.compile(
+        r"https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+"
+        r"(?:/[-\w$.+!*'(),;:@&=?/~#%]*)?"
+    )
+    return list(set(url_pattern.findall(text)))
+
+
+def _fetch_url_text(url: str, timeout: int = 10) -> str | None:
+    """Fetch a URL and extract readable text content."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; GeekCatBot/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return None
+            raw = resp.read().decode("utf-8", errors="replace")
+            text = _html_to_text(raw)
+            # Truncate to avoid huge context
+            return text[:5000] if text else None
+    except Exception:
+        return None
+
+
 async def _sse_send_message(thread_id: str, body: MessageSendRequest):
     try:
         config = {
@@ -369,6 +449,16 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
             },
             config,
         )
+
+        # Detect URLs in the user message and fetch content for graph context
+        urls = _extract_urls(body.content)
+        url_texts: list[str] = list(initial_state.get("product_context") or [])
+        for url in urls:
+            url_text = _fetch_url_text(url)
+            if url_text:
+                url_texts.append(f"[URL] {url}\n{url_text}")
+        if url_texts:
+            initial_state["product_context"] = url_texts
 
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
@@ -452,6 +542,13 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                     msg["usage"] = usage_dict
                 if rag_trace_data:
                     msg["rag_trace"] = rag_trace_data
+                seo = {
+                    k: snap_values.get(k)
+                    for k in ("seo_title", "seo_keywords", "seo_description", "meta_description", "url_slug", "alt_text")
+                    if snap_values.get(k)
+                }
+                if seo:
+                    msg["seo_metadata"] = seo
                 break
 
         now = _utc_now_iso()
@@ -567,6 +664,16 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
                 flags=re.IGNORECASE,
             )
 
+        # Fetch URL content if the instruction contains a URL
+        urls = _extract_urls(instruction)
+        url_contexts: list[str] = []
+        for url in urls:
+            url_text = _fetch_url_text(url)
+            if url_text:
+                url_contexts.append(f"Content from {url}:\n{url_text}")
+        if url_contexts:
+            instruction += "\n\n" + "\n\n---\n\n".join(url_contexts)
+
         system_content = IMAGE_PROMPT_SYSTEM_PROMPT
         if recent_context:
             system_content += (
@@ -647,6 +754,224 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
     except Exception as exc:
         logger.exception("generate image prompt failed")
+        yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
+
+
+# ── SEO generation (standalone, like image_prompt) ──
+
+
+async def _sse_generate_seo(thread_id: str, body: SEORequest):
+    try:
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": body.user_id,
+            }
+        }
+
+        clean_state = _middleware.before_agent(
+            {
+                "messages": [HumanMessage(content=body.instruction)],
+                "user_id": body.user_id,
+                "thread_id": thread_id,
+                "_current_node": "seo_generator",
+            },
+            config,
+        )
+
+        yield _encode_sse("start", {"status": "active"})
+
+        llm = ChatOpenAI(
+            model="openai/gpt-5-mini",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ["OPENROUTER_API_KEY"],
+        )
+
+        # Load recent conversation context
+        thread_dict = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
+        if not thread_dict:
+            thread_dict = _load_thread_record(thread_id) or {}
+        msg_list = thread_dict.get("messages", [])
+        recent_context = _format_recent_conversation(msg_list)
+
+        # Find last assistant post to use as reference for SEO
+        last_assistant_text = ""
+        for msg in reversed(msg_list):
+            if msg.get("role") != "assistant":
+                continue
+            text = _coerce_plain_assistant_content(str(msg.get("content") or "")).strip()
+            if not text or text.startswith("🎨") or text.startswith("🔎"):
+                continue
+            last_assistant_text = text
+            break
+
+        instruction = body.instruction
+        if last_assistant_text:
+            instruction = re.sub(
+                r"\bthe generated post\b",
+                last_assistant_text[:400],
+                instruction,
+                flags=re.IGNORECASE,
+            )
+
+        product_context = thread_dict.get("product_context", [])
+        product_skus = thread_dict.get("product_skus", [])
+        brand_rules = thread_dict.get("brand_rules", {})
+
+        context_parts = []
+        if product_skus:
+            context_parts.append("Product SKUs: " + ", ".join(product_skus))
+        if product_context:
+            context_parts.append("Product context:\n" + "\n\n".join(product_context[:3]))
+        if brand_rules:
+            rules_text = "\n".join(f"- {k}: {v}" for k, v in brand_rules.items())
+            context_parts.append("Brand rules:\n" + rules_text)
+        if last_assistant_text:
+            context_parts.append("Generated marketing copy:\n" + last_assistant_text[:500])
+
+        user_prompt = instruction
+        if context_parts:
+            user_prompt = f"{instruction}\n\nReference context:\n" + "\n\n".join(context_parts)
+
+        # Fetch URL content if the instruction contains a URL
+        urls = _extract_urls(instruction)
+        url_contexts: list[str] = []
+        for url in urls:
+            url_text = _fetch_url_text(url)
+            if url_text:
+                url_contexts.append(f"Content from {url}:\n{url_text}")
+        if url_contexts:
+            user_prompt += "\n\n" + "\n\n---\n\n".join(url_contexts)
+
+        system_content = SEO_SYSTEM_PROMPT
+        if recent_context:
+            system_content += (
+                "\n\nRecent conversation context:\n" + recent_context
+            )
+
+        messages: list = [
+            SystemMessage(content=system_content),
+            HumanMessage(content=user_prompt),
+        ]
+
+        messages = _middleware.before_model(messages, clean_state)
+
+        result_parts: list[str] = []
+        stream_chunks: list[Any] = []
+        async for chunk in llm.astream(messages):
+            stream_chunks.append(chunk)
+            content = chunk.content if hasattr(chunk, "content") else ""
+            if isinstance(content, str) and content:
+                result_parts.append(content)
+                yield _encode_sse("delta", {"text": content})
+
+        raw_result = "".join(result_parts).strip()
+
+        usage_dict = None
+        from backend.tracking.usage import extract_usage_from_chunks
+        chunk_usage = extract_usage_from_chunks(stream_chunks)
+        if chunk_usage:
+            model_name = "openai/gpt-5-mini"
+            from backend.tracking.usage import UsageInfo
+            u = UsageInfo(model=model_name, input_tokens=chunk_usage.get("input_tokens", 0), output_tokens=chunk_usage.get("output_tokens", 0))
+            usage_dict = u.to_dict()
+
+        # Parse SEO metadata from LLM output
+        seo_metadata = {}
+        try:
+            import json
+            text = raw_result.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*", "", text)
+                text = re.sub(r"\s*```$", "", text)
+            payload = json.loads(text)
+            seo_metadata = {
+                "seo_title": payload.get("seo_title", ""),
+                "focus_keyword": payload.get("focus_keyword", ""),
+                "secondary_keywords": payload.get("secondary_keywords", []),
+                "meta_description": payload.get("meta_description", ""),
+                "seo_description": payload.get("seo_description", ""),
+                "url_slug": payload.get("url_slug", ""),
+                "alt_text": payload.get("alt_text", ""),
+            }
+        except Exception:
+            logger.warning("_sse_generate_seo: failed to parse JSON from LLM output, using raw")
+
+        # Build formatted display text (strip HTML from description)
+        def _fmt(val: str) -> str:
+            return val.strip() if val else ""
+
+        seo_desc_raw = seo_metadata.get("seo_description", "")
+        if seo_desc_raw and ("<" in seo_desc_raw and ">" in seo_desc_raw):
+            seo_desc_clean = _html_to_text(seo_desc_raw)
+            seo_metadata["seo_description"] = seo_desc_clean
+        else:
+            seo_desc_clean = seo_desc_raw
+
+        if seo_metadata.get("seo_title"):
+            parts = []
+            if _fmt(seo_metadata.get("seo_title")):
+                parts.append(f"**SEO Title:** {seo_metadata['seo_title']}")
+            if _fmt(seo_metadata.get("focus_keyword")):
+                parts.append(f"**Focus Keyword:** {seo_metadata['focus_keyword']}")
+            if seo_metadata.get("secondary_keywords"):
+                parts.append(f"**Secondary Keywords:** {', '.join(seo_metadata['secondary_keywords'])}")
+            if _fmt(seo_metadata.get("meta_description")):
+                parts.append(f"**Meta Description:** {seo_metadata['meta_description']}")
+            if _fmt(seo_metadata.get("url_slug")):
+                parts.append(f"**URL Slug:** {seo_metadata['url_slug']}")
+            if _fmt(seo_metadata.get("alt_text")):
+                parts.append(f"**Alt Text:** {seo_metadata['alt_text']}")
+            if _fmt(seo_metadata.get("seo_description")):
+                parts.append(f"\n**SEO Description:**\n{seo_metadata['seo_description']}")
+            display_text = "\n\n".join(parts) if parts else raw_result
+        else:
+            display_text = raw_result
+        if display_text and ("<" in display_text and ">" in display_text):
+            display_text = _html_to_text(display_text)
+        if not display_text:
+            display_text = "Could not generate SEO metadata."
+
+        thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id, "user_id": body.user_id, "title": None,
+            "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(),
+            "status": "active", "messages": [],
+        }
+        thread = _thread_cache_set(thread)
+
+        now = _utc_now_iso()
+        user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+        msg_id = str(uuid.uuid4())
+        assistant_msg = {
+            "id": msg_id, "role": "assistant",
+            "content": f"🔎 **SEO Metadata:**\n\n{display_text}",
+            "created_at": now,
+        }
+        if usage_dict:
+            assistant_msg["usage"] = usage_dict
+        if seo_metadata.get("seo_title"):
+            assistant_msg["seo_metadata"] = seo_metadata
+        rag_trace_data = get_rag_trace()
+        if rag_trace_data:
+            assistant_msg["rag_trace"] = rag_trace_data
+        thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
+
+        cached_thread = _thread_cache_update(thread_id, {
+            "messages": thread["messages"],
+            "updated_at": now,
+        })
+        _save_thread_record(cached_thread)
+
+        yield _encode_sse("done", {
+            "title": cached_thread.get("title"),
+            "status": "active",
+            "messages": cached_thread.get("messages", []),
+            "pending_copy": cached_thread.get("pending_copy"),
+        })
+    except HTTPException as exc:
+        yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+    except Exception as exc:
+        logger.exception("generate seo failed")
         yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
@@ -1185,6 +1510,15 @@ def generate_image_prompt_stream(thread_id: str, body: ImagePromptRequest):
     )
 
 
+@router.post("/chat/threads/{thread_id}/seo/stream")
+def generate_seo_stream(thread_id: str, body: SEORequest):
+    return StreamingResponse(
+        _sse_generate_seo(thread_id, body),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @router.delete("/chat/threads/{thread_id}", response_model=DeleteThreadResponse)
 def delete_thread(thread_id: str, user_id: str):
     deleted = _delete_thread_record(thread_id, user_id)
@@ -1435,6 +1769,12 @@ async def _regenerate_impl(thread_id: str, body: RegenerateRequest) -> dict:
         "draft_copy_de": "",
         "copy_metadata": {},
         "publication_result": None,
+        "seo_title": "",
+        "seo_keywords": [],
+        "seo_description": "",
+        "meta_description": "",
+        "url_slug": "",
+        "alt_text": "",
         "brand_rules": {},
         "ltm_context": [],
         "_analytics_log": [],
@@ -1502,6 +1842,12 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
             "draft_copy_de": "",
             "copy_metadata": {},
             "publication_result": None,
+            "seo_title": "",
+            "seo_keywords": [],
+            "seo_description": "",
+            "meta_description": "",
+            "url_slug": "",
+            "alt_text": "",
             "brand_rules": {},
             "ltm_context": [],
             "_analytics_log": [],
@@ -1510,6 +1856,16 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
 
         if _middleware:
             initial_state = _middleware.before_agent(initial_state, config)
+
+        # Fetch URL content from the instruction and add to graph context
+        urls = _extract_urls(instruction)
+        url_texts: list[str] = list(initial_state.get("product_context") or [])
+        for url in urls:
+            url_text = _fetch_url_text(url)
+            if url_text:
+                url_texts.append(f"[URL] {url}\n{url_text}")
+        if url_texts:
+            initial_state["product_context"] = url_texts
 
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
@@ -1586,6 +1942,13 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
                     msg["usage"] = usage_dict
                 if rag_trace_data:
                     msg["rag_trace"] = rag_trace_data
+                seo = {
+                    k: snap_values.get(k)
+                    for k in ("seo_title", "seo_keywords", "seo_description", "meta_description", "url_slug", "alt_text")
+                    if snap_values.get(k)
+                }
+                if seo:
+                    msg["seo_metadata"] = seo
                 break
 
         now = _utc_now_iso()
@@ -1598,10 +1961,10 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
         _save_thread_record(cached_thread)
 
         yield _encode_sse("done", {
-            "status": cached_thread["status"],
-            "messages": cached_thread["messages"],
+            "title": cached_thread.get("title"),
+            "status": payload["status"],
+            "messages": payload["messages"],
             "pending_copy": payload["pending_copy"],
-            "title": cached_thread["title"],
         })
     except HTTPException as exc:
         yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})

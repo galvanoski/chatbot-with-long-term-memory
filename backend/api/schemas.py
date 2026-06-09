@@ -31,6 +31,11 @@ class ImagePromptRequest(BaseModel):
     instruction: str = "a cat programmer logo"
 
 
+class SEORequest(BaseModel):
+    user_id: str
+    instruction: str = "Generate SEO metadata for my product"
+
+
 class BrandRuleSaveRequest(BaseModel):
     user_id: str
     key: str

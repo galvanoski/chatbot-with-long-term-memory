@@ -3,10 +3,12 @@ const route = useRoute()
 const chatId = route.params.id as string
 const initialPrompt = computed(() => typeof route.query.prompt === 'string' ? route.query.prompt : '')
 const initialImagePrompt = computed(() => typeof route.query.imagePrompt === 'string' ? route.query.imagePrompt : '')
+const initialSEO = computed(() => typeof route.query.seo === 'string' ? route.query.seo : '')
 const debugEnabled = computed(() => route.query.debug === '1')
 
 const initialPromptSent = ref(false)
 const initialImagePromptSent = ref(false)
+const initialSEOSent = ref(false)
 const regenerateProcessing = ref(false)
 
 const chat = useGeekCatChat()
@@ -20,6 +22,9 @@ async function send() {
   input.value = ''
   if (text.startsWith('Generate a logo prompt')) {
     return chat.generateImagePrompt(text)
+  }
+  if (text.startsWith('Generate SEO')) {
+    return chat.generateSEO(text)
   }
   return chat.sendMessage(text)
 }
@@ -40,6 +45,13 @@ onMounted(async () => {
     return
   }
 
+  if (initialSEO.value && !initialSEOSent.value) {
+    initialSEOSent.value = true
+    await chat.generateSEO(initialSEO.value)
+    await navigateTo(`/chat/${chatId}`, { replace: true })
+    return
+  }
+
   if (!initialPrompt.value || initialPromptSent.value) return
   if (currentThread.value?.messages?.length) return
 
@@ -49,10 +61,21 @@ onMounted(async () => {
   await navigateTo(`/chat/${chatId}`, { replace: true })
 })
 
-async function handleRegenerate(message: string) {
+async function handleRegenerate(msg: any) {
   regenerateProcessing.value = true
   try {
-    await chat.regenerateCopy(message || assistantResponsePreview.value || undefined)
+    if (msg?.seo_metadata) {
+      const allMessages = unref(chat.messages)
+      const idx = allMessages.indexOf(msg)
+      const userMsg = idx >= 0
+        ? allMessages.slice(0, idx).reverse().find((m: any) => m.role === 'user')
+        : null
+      const instruction = userMsg ? messageText(userMsg) : 'Generate SEO for: '
+      await chat.generateSEO(instruction)
+    } else {
+      const text = typeof msg === 'string' ? msg : messageText(msg)
+      await chat.regenerateCopy(text || assistantResponsePreview.value || undefined)
+    }
   } finally {
     regenerateProcessing.value = false
   }
@@ -312,7 +335,7 @@ const debugState = computed(() => JSON.stringify({
                     type="button"
                     class="chat-action-btn"
                     :disabled="regenerateProcessing"
-                    @click="handleRegenerate(messageText(msg))"
+                    @click="handleRegenerate(msg)"
                     aria-label="Neu generieren"
                   >
                     <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
@@ -339,6 +362,42 @@ const debugState = computed(() => JSON.stringify({
                   <span>⬆ {{ msg.usage.input_tokens }}</span>
                   <span>⬇ {{ msg.usage.output_tokens }}</span>
                   <span>${{ msg.usage.cost.toFixed(5) }}</span>
+                </div>
+
+                <div v-if="msg.seo_metadata" class="w-full mt-2">
+                  <details class="group">
+                    <summary class="flex items-center gap-1.5 cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-muted/60 hover:text-default select-none py-0.5">
+                      <span class="text-xs font-mono leading-none group-open:block hidden">−</span>
+                      <span class="text-xs font-mono leading-none group-open:hidden block">+</span>
+                      SEO
+                    </summary>
+                    <div class="mt-1.5 space-y-1 text-[10px]">
+                      <div v-if="msg.seo_metadata.seo_title" class="flex gap-2">
+                        <span class="text-muted/50">SEO title:</span>
+                        <span class="text-muted/70 font-semibold">{{ msg.seo_metadata.seo_title }}</span>
+                      </div>
+                      <div v-if="msg.seo_metadata.focus_keyword" class="flex gap-2">
+                        <span class="text-muted/50">Focus keyword:</span>
+                        <span class="font-mono text-muted/70">{{ msg.seo_metadata.focus_keyword }}</span>
+                      </div>
+                      <div v-if="msg.seo_metadata.secondary_keywords?.length" class="flex gap-2">
+                        <span class="text-muted/50">Secondary keywords:</span>
+                        <span class="text-muted/70">{{ msg.seo_metadata.secondary_keywords.join(', ') }}</span>
+                      </div>
+                      <div v-if="msg.seo_metadata.meta_description" class="flex gap-2">
+                        <span class="text-muted/50">Meta description:</span>
+                        <span class="text-muted/70">{{ msg.seo_metadata.meta_description }}</span>
+                      </div>
+                      <div v-if="msg.seo_metadata.url_slug" class="flex gap-2">
+                        <span class="text-muted/50">URL slug:</span>
+                        <span class="font-mono text-muted/70">{{ msg.seo_metadata.url_slug }}</span>
+                      </div>
+                      <div v-if="msg.seo_metadata.alt_text" class="flex gap-2">
+                        <span class="text-muted/50">Alt text:</span>
+                        <span class="text-muted/70">{{ msg.seo_metadata.alt_text }}</span>
+                      </div>
+                    </div>
+                  </details>
                 </div>
 
                 <div v-if="msg.rag_trace?.length" class="w-full mt-2">
@@ -455,6 +514,26 @@ const debugState = computed(() => JSON.stringify({
                           </div>
                         </details>
 
+                        <!-- seo_generate -->
+                        <details v-else-if="ev.stage === 'seo_generate'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>🔎 SEO Generation</span>
+                            <span v-if="ev.focus_keyword" class="font-mono text-muted truncate max-w-32">{{ ev.focus_keyword }}</span>
+                            <span v-if="ev.latency_ms !== undefined" class="text-muted">{{ ev.latency_ms }}ms</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-if="ev.seo_title" class="flex gap-2"><span class="text-muted/50">SEO title:</span><span class="text-muted/70 font-semibold">{{ ev.seo_title }}</span></div>
+                            <div v-if="ev.focus_keyword" class="flex gap-2"><span class="text-muted/50">focus keyword:</span><span class="font-mono text-muted/70">{{ ev.focus_keyword }}</span></div>
+                            <div v-if="ev.secondary_keywords?.length" class="flex gap-2"><span class="text-muted/50">secondary keywords:</span><span class="text-muted/70">{{ ev.secondary_keywords.join(', ') }}</span></div>
+                            <div v-if="ev.meta_description" class="flex gap-2"><span class="text-muted/50">meta description:</span><span class="text-muted/70">{{ ev.meta_description }}</span></div>
+                            <div v-if="ev.url_slug" class="flex gap-2"><span class="text-muted/50">URL slug:</span><span class="font-mono text-muted/70">{{ ev.url_slug }}</span></div>
+                            <div v-if="ev.alt_text" class="flex gap-2"><span class="text-muted/50">alt text:</span><span class="text-muted/70">{{ ev.alt_text }}</span></div>
+                            <div v-if="ev.latency_ms !== undefined" class="flex gap-2"><span class="text-muted/50">latency:</span><span class="text-muted/70">{{ ev.latency_ms }}ms</span></div>
+                            <div v-if="ev.input_tokens !== undefined" class="flex gap-2"><span class="text-muted/50">input tokens:</span><span class="text-muted/70">{{ ev.input_tokens }}</span></div>
+                            <div v-if="ev.output_tokens !== undefined" class="flex gap-2"><span class="text-muted/50">output tokens:</span><span class="text-muted/70">{{ ev.output_tokens }}</span></div>
+                          </div>
+                        </details>
+
                         <!-- agent_complete -->
                         <details v-else-if="ev.stage === 'agent_complete'" class="border border-dashed border-default/40 rounded px-2 py-1">
                           <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
@@ -499,6 +578,14 @@ const debugState = computed(() => JSON.stringify({
               class="rounded-full"
               :disabled="isLoading"
               @click="input = 'Generate a logo prompt for: '"
+            />
+            <UButton
+              icon="i-lucide-search"
+              variant="ghost"
+              color="neutral"
+              class="rounded-full"
+              :disabled="isLoading"
+              @click="input = 'Generate SEO for: '"
             />
             <UChatPrompt
               v-model="input"

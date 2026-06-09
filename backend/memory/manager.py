@@ -4,6 +4,7 @@ from typing import Any
 from backend.memory.long_term import LongTermMemory
 from backend.memory.compaction import CompactionEngine
 from backend.memory.search.hybrid import HybridSearchEngine
+from backend.rag.pipeline import expand_query, rerank_documents, compress_documents
 
 logger = logging.getLogger("geekcat.memory")
 
@@ -64,8 +65,33 @@ class MemoryManager:
         query: str,
         k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Retrieve relevant memories using hybrid search (vector + BM25 + RRF)."""
-        return self.hybrid_search.hybrid_search(user_id, query, k=k)
+        """Retrieve relevant memories using the full RAG pipeline.
+
+        Steps: query expansion → hybrid search (vector + BM25 + RRF) → re-rank → compress.
+        """
+        # 1. Expand query
+        queries = expand_query(query)
+        # 2. Search each variant via hybrid search
+        seen_ids: set[str] = set()
+        all_results: list[dict[str, Any]] = []
+        for q in queries:
+            results = self.hybrid_search.hybrid_search(user_id, q, k=k * 2)
+            for doc in results:
+                doc_id = str(doc.get("id", ""))
+                if doc_id and doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    doc["_search_query"] = q
+                    all_results.append(doc)
+        if not all_results:
+            return []
+        # 3. Re-rank
+        reranked = rerank_documents(query, all_results, top_k=k * 2)
+        # 4. Compress
+        compressed = compress_documents(query, reranked[:k], max_chars=400)
+        for doc in compressed:
+            if doc.get("compressed_text"):
+                doc["text"] = doc["compressed_text"]
+        return compressed[:k]
 
     def retrieve_global(
         self,

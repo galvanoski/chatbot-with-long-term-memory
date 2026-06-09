@@ -5,7 +5,7 @@ export default defineEventHandler(async (event) => {
   const threadId = assertUuid(getRouterParam(event, 'id'), 'threadId')
   const userId = getUserId(event)
   const body = await readBody(event)
-  const instruction = assertOptionalString(body?.instruction, 'instruction', 1200)
+  const instruction = assertOptionalString(body?.instruction, 'instruction', 10000)
 
   try {
     const result = await $fetch(`${apiBaseUrl}/api/chat/threads/${threadId}/regenerate`, {

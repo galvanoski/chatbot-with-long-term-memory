@@ -1,6 +1,10 @@
-"""RAG tools for querying the POD product catalog and meme repository."""
+"""RAG tools for querying the POD product catalog and meme repository.
+
+All searches now go through the RAG pipeline (query expansion → search → re-rank → compression).
+"""
 
 from backend.rag.vectorstore import ChromaStore
+from backend.rag.pipeline import run_rag_pipeline
 
 POD_COLLECTION = "pod_catalog"
 MEME_COLLECTION = "meme_repo"
@@ -17,19 +21,42 @@ def _get_store() -> ChromaStore:
     return _product_store
 
 
-def query_product_catalog(query: str, top_k: int = 3) -> list[dict]:
-    """Search the POD product catalog for products matching the query.
-
-    Returns list of dicts with keys: id, text, score, metadata.
-    """
+def _search_products(query: str, top_k: int) -> list[dict]:
     store = _get_store()
     return store.search_global(POD_COLLECTION, query, k=top_k)
 
 
+def query_product_catalog(query: str, top_k: int = 3) -> list[dict]:
+    """Search the POD product catalog with full RAG pipeline.
+
+    Returns list of dicts with keys: id, text, score, metadata.
+    """
+    result = run_rag_pipeline(
+        query=query,
+        search_fn=_search_products,
+        top_k=top_k,
+        expand=True,
+        rerank=True,
+        compress=True,
+    )
+    return result["results"]
+
+
 def query_meme_repository(query: str, top_k: int = 2) -> list[dict]:
-    """Search the meme / technical concept repository."""
-    store = _get_store()
-    return store.search_global(MEME_COLLECTION, query, k=top_k)
+    """Search the meme / technical concept repository with full RAG pipeline."""
+    def _search_memes(q: str, k: int) -> list[dict]:
+        store = _get_store()
+        return store.search_global(MEME_COLLECTION, q, k=k)
+
+    result = run_rag_pipeline(
+        query=query,
+        search_fn=_search_memes,
+        top_k=top_k,
+        expand=True,
+        rerank=True,
+        compress=True,
+    )
+    return result["results"]
 
 
 def load_products_to_catalog(items: list[dict]) -> int:

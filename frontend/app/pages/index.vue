@@ -29,9 +29,11 @@ async function onSubmit() {
     const id = await chat.createThread()
     if (id) {
       const isImagePrompt = prompt.startsWith('Generate a logo prompt')
+      const isSEO = prompt.startsWith('Generate SEO')
+      const query = isImagePrompt ? { imagePrompt: prompt } : isSEO ? { seo: prompt } : { prompt }
       await navigateTo({
         path: `/chat/${id}`,
-        query: isImagePrompt ? { imagePrompt: prompt } : { prompt }
+        query
       })
     }
   } finally {
@@ -114,6 +116,16 @@ const suggestions = [
       variant="outline"
       class="rounded-full"
       @click="input = 'Generate a logo prompt for: '"
+    />
+
+    <UButton
+      icon="i-lucide-search"
+      label="Generate SEO metadata"
+      size="sm"
+      color="neutral"
+      variant="outline"
+      class="rounded-full"
+      @click="input = 'Generate SEO for: '"
     />
   </div>
 </template>

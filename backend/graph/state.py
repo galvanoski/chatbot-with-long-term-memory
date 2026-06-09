@@ -30,6 +30,14 @@ class AgentState(TypedDict):
     # ── Publisher node output ──
     publication_result: Optional[dict]
 
+    # ── SEO generator node output ──
+    seo_title: str
+    seo_keywords: list[str]
+    seo_description: str
+    meta_description: str
+    url_slug: str
+    alt_text: str
+
     # ── Image prompt generator ──
     image_prompt_instruction: Optional[str]
     image_prompt_result: Optional[str]

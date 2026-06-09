@@ -62,7 +62,7 @@ def research_node(state: AgentState) -> dict:
         sarcastic_legend = metadata.get("sarcastic_legend") or metadata.get("tagline") or ""
         audience = metadata.get("audience", "IT pros and cat lovers")
         category = metadata.get("category", "pod")
-        base_text = p.get("text", "")
+        base_text = p.get("compressed_text") or p.get("text", "")
 
         snippet = (
             f"SKU={sku} | NAME={name} | CATEGORY={category} | AUDIENCE={audience}\n"

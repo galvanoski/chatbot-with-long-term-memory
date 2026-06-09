@@ -558,6 +558,100 @@ export function useGeekCatChat() {
     }
   }
 
+  async function generateSEO(instruction: string): Promise<boolean> {
+    if (!currentThread.value || loading.value) return false
+    const previousUiMessages = [...messages.value]
+    cancelMessageAnimation()
+    const controller = new AbortController()
+    animationController.value = controller
+
+    const optimisticUserMessage = {
+      id: `temp-user-${Date.now()}`,
+      role: 'user' as const,
+      content: instruction,
+      created_at: new Date().toISOString()
+    }
+    messages.value = [
+      ...previousUiMessages,
+      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: instruction }] }
+    ]
+
+    loading.value = true
+    error.value = null
+    try {
+      const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/seo/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction })
+      })
+
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('SEO endpoint unavailable')
+      }
+
+      const assistantStreamId = `temp-seo-${Date.now()}`
+      messages.value = [
+        ...messages.value,
+        {
+          id: assistantStreamId,
+          role: 'assistant',
+          name: 'The Geek Cat',
+          content: '',
+          created_at: new Date().toISOString(),
+          parts: [{ type: 'text' as const, text: '' }]
+        }
+      ]
+
+      await consumeSSEStream(streamResponse.body, async (event, payload) => {
+        if (controller.signal.aborted) return
+
+        if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
+          const deltaText = String((payload as { text?: unknown }).text ?? '')
+          if (!deltaText) return
+          messages.value = messages.value.map((message) => {
+            if (message.id !== assistantStreamId) return message
+            const current = message.parts?.[0]?.text ?? message.content ?? ''
+            const next = `${current}${deltaText}`
+            return { ...message, content: next, parts: [{ type: 'text' as const, text: next }] }
+          })
+          return
+        }
+
+        if (event === 'done' && payload && typeof payload === 'object') {
+          const streamedAssistantText = messages.value.find(m => m.id === assistantStreamId)?.parts?.[0]?.text ?? ''
+          const res = parseValidatedResponse(threadActionResponseSchema, payload, 'SEO response')
+          currentThread.value!.messages = res.messages
+          currentThread.value!.title = res.title ?? currentThread.value!.title
+          currentThread.value!.status = res.status
+          currentThread.value!.updated_at = new Date().toISOString()
+          upsertThreadListItem(currentThread.value!)
+          storeRagTrace(res.rag_trace)
+          const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
+          messages.value = finalUiMessages
+          return
+        }
+
+        if (event === 'error') {
+          const detail = typeof payload === 'object' && payload && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'SEO generation failed')
+            : 'SEO generation failed'
+          throw new Error(detail)
+        }
+      })
+
+      return true
+    } catch (errorValue: unknown) {
+      messages.value = previousUiMessages
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate SEO'
+      return false
+    } finally {
+      if (animationController.value === controller) {
+        animationController.value = null
+      }
+      loading.value = false
+    }
+  }
+
   async function regenerateCopy(instruction?: string): Promise<boolean> {
     if (!currentThread.value) return false
     const previousThreadMessages = [...currentThread.value.messages]
@@ -676,6 +770,7 @@ export function useGeekCatChat() {
     regenerateCopy,
     pollState,
     cancelMessageAnimation,
-    generateImagePrompt
+    generateImagePrompt,
+    generateSEO
   }
 }

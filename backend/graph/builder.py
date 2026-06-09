@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from backend.graph.state import AgentState
 from backend.graph.nodes.research import research_node
 from backend.graph.nodes.copywriter import copywriter_node
+from backend.graph.nodes.seo import seo_node
 from backend.graph.nodes.publisher import publisher_node
 from backend.graph.nodes.image_prompt import image_prompt_node
 from backend.graph.conditions import should_approve
@@ -57,6 +58,7 @@ async def build_marketing_graph(
         "copywriter",
         lambda state: copywriter_node(state, mw=middleware),
     )
+    builder.add_node("seo_generator", seo_node)
     builder.add_node("publisher", publisher_node)
     builder.add_node(
         "image_prompt_generator",
@@ -75,10 +77,11 @@ async def build_marketing_graph(
 
     # ── Main pipeline edges ──
     builder.add_edge("research", "copywriter")
+    builder.add_edge("copywriter", "seo_generator")
 
-    # Conditional: HITL before publish
+    # Conditional: HITL before publish (after seo)
     builder.add_conditional_edges(
-        "copywriter",
+        "seo_generator",
         should_approve,
         {
             "publisher": "publisher",
