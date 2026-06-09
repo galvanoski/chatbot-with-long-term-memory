@@ -13,7 +13,7 @@ export const threadMessageSchema = z.object({
   content: z.string(),
   created_at: z.string(),
   pending_approval: z.boolean().optional(),
-  usage: tokenUsageSchema.optional()
+  usage: tokenUsageSchema.nullish()
 })
 
 export const threadSourceSchema = z.object({

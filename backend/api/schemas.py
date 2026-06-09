@@ -105,6 +105,7 @@ class ThreadMessageResponse(BaseModel):
     content: str
     created_at: str
     pending_approval: bool = False
+    usage: Optional[dict] = None
 
 
 class ThreadSourceResponse(BaseModel):

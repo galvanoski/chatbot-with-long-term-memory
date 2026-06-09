@@ -1,11 +1,11 @@
 import datetime as dt
+import re
 import asyncio
 import json
 import logging
 import os
 import sqlite3
 import threading
-import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -449,6 +449,27 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
+def _format_recent_conversation(messages: list[dict], max_pairs: int = 3) -> str:
+    """Format recent user/assistant pairs from thread messages for LLM context."""
+    pairs: list[str] = []
+    for msg in reversed(messages):
+        role = str(msg.get("role") or "")
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "assistant":
+            label = "Assistant"
+            content = _coerce_plain_assistant_content(content)
+        elif role == "user":
+            label = "User"
+        else:
+            continue
+        pairs.insert(0, f"{label}: {content[:500]}")
+    # Keep only the last max_pairs * 2 messages (pairs)
+    pairs = pairs[-(max_pairs * 2):]
+    return "\n\n".join(pairs) if pairs else ""
+
+
 IMAGE_PROMPT_SYSTEM_PROMPT = (
     "You are a creative image prompt generator for 'The Geek Cat' brand \u2014 "
     "a German print-on-demand store selling sarcastic IT/cat-themed merchandise. "
@@ -489,9 +510,46 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
             api_key=os.environ["OPENROUTER_API_KEY"],
         )
 
+        # Load recent conversation context from the thread record so the LLM
+        # can understand references like "the generated post".
+        thread_dict = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
+        if not thread_dict:
+            # Fallback: load without user_id filter (thread_id is unique)
+            thread_dict = _load_thread_record(thread_id) or {}
+        msg_list = thread_dict.get("messages", [])
+        recent_context = _format_recent_conversation(msg_list)
+
+        # Find last REAL assistant post (skip image prompt responses from prior attempts)
+        last_assistant_text = ""
+        for msg in reversed(msg_list):
+            if msg.get("role") != "assistant":
+                continue
+            text = _coerce_plain_assistant_content(str(msg.get("content") or "")).strip()
+            if not text or text.startswith("🎨") or text.startswith("**Image Prompt**"):
+                continue
+            last_assistant_text = text
+            break
+
+        instruction = body.instruction
+        if last_assistant_text:
+            # Case-insensitive replacement of "the generated post" with actual content
+            instruction = re.sub(
+                r"\bthe generated post\b",
+                last_assistant_text[:400],
+                instruction,
+                flags=re.IGNORECASE,
+            )
+
+        system_content = IMAGE_PROMPT_SYSTEM_PROMPT
+        if recent_context:
+            system_content += (
+                "\n\nRecent conversation context (use this to resolve references "
+                "like 'the generated post' or 'my design'):\n" + recent_context
+            )
+
         messages: list = [
-            SystemMessage(content=IMAGE_PROMPT_SYSTEM_PROMPT),
-            HumanMessage(content=body.instruction),
+            SystemMessage(content=system_content),
+            HumanMessage(content=instruction),
         ]
 
         # Apply before_model middleware (injects brand rules, LTM context)
