@@ -170,12 +170,24 @@ export function useGeekCatChat() {
   const pendingCopy = computed(() => currentThread.value?.pending_copy)
 
   const messageFeedback = useState<Record<string, 'up' | 'down'>>('geekcat-message-feedback', () => ({}))
+  const ragTraces = useState<Record<string, unknown[]>>('geekcat-rag-traces', () => ({}))
 
   function setMessageFeedback(id: string, rating: 'up' | 'down' | null) {
     if (rating === null) {
       delete messageFeedback.value[id]
     } else {
       messageFeedback.value[id] = rating
+    }
+  }
+
+  function storeRagTrace(trace: unknown[] | undefined) {
+    if (!trace || !currentThread.value) return
+    const msgs = currentThread.value.messages
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        ragTraces.value[msgs[i].id] = trace
+        return
+      }
     }
   }
 
@@ -347,6 +359,7 @@ export function useGeekCatChat() {
           currentThread.value!.pending_copy = res.pending_copy
           currentThread.value!.updated_at = new Date().toISOString()
           upsertThreadListItem(currentThread.value!)
+          storeRagTrace(res.rag_trace)
 
           const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
           messages.value = finalUiMessages
@@ -517,6 +530,7 @@ export function useGeekCatChat() {
           currentThread.value!.status = res.status
           currentThread.value!.updated_at = new Date().toISOString()
           upsertThreadListItem(currentThread.value!)
+          storeRagTrace(res.rag_trace)
 
           const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
           messages.value = finalUiMessages
@@ -597,6 +611,7 @@ export function useGeekCatChat() {
             currentThread.value!.title = res.title
           }
           currentThread.value!.updated_at = new Date().toISOString()
+          storeRagTrace(res.rag_trace)
           messages.value = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
           upsertThreadListItem(currentThread.value!)
           return
@@ -650,6 +665,7 @@ export function useGeekCatChat() {
     pendingCopy,
     messageFeedback,
     setMessageFeedback,
+    ragTraces,
     fetchThreads,
     deleteThread,
     createThread,

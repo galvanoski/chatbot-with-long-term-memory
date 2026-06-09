@@ -19,7 +19,10 @@ class ChromaStore:
       - meme_repo       → global meme / technical concept repository
     """
 
-    def __init__(self, persist_dir: str = "backend/chroma_db"):
+    def __init__(self, persist_dir: str | None = None):
+        if persist_dir is None:
+            persist_dir = str(Path(__file__).resolve().parents[1] / "chroma_db")
+        self._persist_dir = persist_dir
         self._client = chromadb.PersistentClient(
             path=persist_dir,
             settings=Settings(anonymized_telemetry=False),

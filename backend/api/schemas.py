@@ -106,6 +106,7 @@ class ThreadMessageResponse(BaseModel):
     created_at: str
     pending_approval: bool = False
     usage: Optional[dict] = None
+    rag_trace: Optional[list[dict]] = None
 
 
 class ThreadSourceResponse(BaseModel):

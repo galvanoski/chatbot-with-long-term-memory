@@ -38,6 +38,9 @@ class AgentState(TypedDict):
     brand_rules: dict
     ltm_context: list[str]
 
+    # ── RAG trace (accumulated across nodes) ──
+    _rag_trace: Annotated[list[dict], operator.add]
+
     # ── Analytics (internal, stripped before response) ──
     _analytics_log: list[dict]
     _current_node: str

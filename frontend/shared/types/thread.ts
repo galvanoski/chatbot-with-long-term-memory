@@ -10,6 +10,7 @@ export interface Message {
     model: string
     cost: number
   }
+  rag_trace?: Array<Record<string, unknown>> | null
 }
 
 export interface UIMessage {
@@ -29,6 +30,7 @@ export interface UIMessage {
     model: string
     cost: number
   }
+  rag_trace?: Array<Record<string, unknown>> | null
 }
 
 export interface Thread {

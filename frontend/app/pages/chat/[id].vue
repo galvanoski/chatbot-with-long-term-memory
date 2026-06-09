@@ -340,6 +340,149 @@ const debugState = computed(() => JSON.stringify({
                   <span>⬇ {{ msg.usage.output_tokens }}</span>
                   <span>${{ msg.usage.cost.toFixed(5) }}</span>
                 </div>
+
+                <div v-if="msg.rag_trace?.length" class="w-full mt-2">
+                  <details class="group">
+                    <summary class="flex items-center gap-1.5 cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-muted/60 hover:text-default select-none py-0.5">
+                      <span class="text-xs font-mono leading-none group-open:block hidden">−</span>
+                      <span class="text-xs font-mono leading-none group-open:hidden block">+</span>
+                      Agent Trace
+                    </summary>
+                    <div class="mt-1.5 space-y-1.5">
+                      <template v-for="(ev, ei) in msg.rag_trace" :key="ei">
+                        <!-- agent_start -->
+                        <details v-if="ev.stage === 'agent_start'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>📋 Start</span>
+                            <span v-if="ev.query" class="truncate max-w-48 text-muted font-mono">{{ ev.query }}</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-if="ev.user_id" class="flex gap-2"><span class="text-muted/50">user:</span><span class="text-muted/70">{{ ev.user_id }}</span></div>
+                            <div v-if="ev.query" class="flex gap-2"><span class="text-muted/50">query:</span><span class="font-mono text-muted/70">{{ ev.query }}</span></div>
+                          </div>
+                        </details>
+
+                        <details v-else-if="ev.stage === 'ltm_retrieve'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>💾 Memory Retrieval</span>
+                            <span v-if="ev.docs !== undefined" class="text-muted">{{ ev.docs }} docs</span>
+                            <span v-if="ev.latency_ms !== undefined" class="text-muted">{{ ev.latency_ms }}ms</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div class="flex gap-2"><span class="text-muted/50">docs:</span><span class="text-muted/70">{{ ev.docs }}</span></div>
+                            <div v-if="ev.latency_ms !== undefined" class="flex gap-2"><span class="text-muted/50">latency:</span><span class="text-muted/70">{{ ev.latency_ms }}ms</span></div>
+                            <div v-if="ev.texts?.length" class="space-y-1">
+                              <span class="text-muted/50">memory excerpts:</span>
+                              <div v-for="(t, ti) in ev.texts" :key="ti" class="ml-2 text-muted/70 truncate font-mono" :title="t">{{ t }}</div>
+                            </div>
+                          </div>
+                        </details>
+
+                        <!-- product_search / meme_search -->
+                        <details v-else-if="ev.stage === 'product_search' || ev.stage === 'meme_search'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>{{ ev.stage === 'product_search' ? '🔍 Product Search' : '🔍 Meme Search' }}</span>
+                            <span v-if="ev.docs !== undefined" class="text-muted">{{ ev.docs }} found</span>
+                            <span v-if="ev.latency_ms !== undefined" class="text-muted">{{ ev.latency_ms }}ms</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-if="ev.docs !== undefined" class="flex gap-2"><span class="text-muted/50">docs found:</span><span class="text-muted/70">{{ ev.docs }}</span></div>
+                            <div v-if="ev.latency_ms !== undefined" class="flex gap-2"><span class="text-muted/50">latency:</span><span class="text-muted/70">{{ ev.latency_ms }}ms</span></div>
+                            <div v-if="ev.products?.length" class="space-y-1">
+                              <span class="text-muted/50">products:</span>
+                              <div v-for="(p, pi) in ev.products" :key="pi" class="ml-2 flex items-center gap-1 text-muted/70">
+                                <span class="font-mono">{{ p.sku }}</span>
+                                <span v-if="p.name" class="truncate">— {{ p.name }}</span>
+                                <span v-if="p.category" class="text-muted/50">({{ p.category }})</span>
+                              </div>
+                            </div>
+                            <div v-if="ev.memes?.length" class="space-y-1">
+                              <span class="text-muted/50">memes:</span>
+                              <div v-for="(m, mi) in ev.memes" :key="mi" class="ml-2 text-muted/70 truncate font-mono" :title="m.text">{{ m.text }}</div>
+                            </div>
+                          </div>
+                        </details>
+
+                        <!-- context_inject -->
+                        <details v-else-if="ev.stage === 'context_inject'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>📦 Context Assembly</span>
+                            <span v-if="ev.latency_ms !== undefined" class="text-muted">{{ ev.latency_ms }}ms</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-if="ev.ltm_docs !== undefined" class="flex gap-2"><span class="text-muted/50">LTM docs injected:</span><span class="text-muted/70">{{ ev.ltm_docs }}</span></div>
+                            <div v-if="ev.brand_rules?.length" class="flex gap-2"><span class="text-muted/50">brand rules:</span><span class="text-muted/70">{{ ev.brand_rules.join(', ') }}</span></div>
+                            <div v-if="ev.product_skus?.length" class="flex gap-2"><span class="text-muted/50">product SKUs:</span><span class="font-mono text-muted/70">{{ ev.product_skus.join(', ') }}</span></div>
+                            <div v-if="ev.latency_ms !== undefined" class="flex gap-2"><span class="text-muted/50">latency:</span><span class="text-muted/70">{{ ev.latency_ms }}ms</span></div>
+                          </div>
+                        </details>
+
+                        <!-- llm_generate -->
+                        <details v-else-if="ev.stage === 'llm_generate'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>🤖 LLM Generation</span>
+                            <span v-if="ev.node" class="font-mono text-muted">{{ ev.node }}</span>
+                            <span v-if="ev.latency_ms !== undefined" class="text-muted">{{ ev.latency_ms }}ms</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-if="ev.node" class="flex gap-2"><span class="text-muted/50">node:</span><span class="font-mono text-muted/70">{{ ev.node }}</span></div>
+                            <div v-if="ev.latency_ms !== undefined" class="flex gap-2"><span class="text-muted/50">latency:</span><span class="text-muted/70">{{ ev.latency_ms }}ms</span></div>
+                            <div v-if="ev.input_tokens !== undefined" class="flex gap-2"><span class="text-muted/50">input tokens:</span><span class="text-muted/70">{{ ev.input_tokens }}</span></div>
+                            <div v-if="ev.output_tokens !== undefined" class="flex gap-2"><span class="text-muted/50">output tokens:</span><span class="text-muted/70">{{ ev.output_tokens }}</span></div>
+                            <div v-if="ev.total_tokens !== undefined" class="flex gap-2"><span class="text-muted/50">total tokens:</span><span class="text-muted/70">{{ ev.total_tokens }}</span></div>
+                          </div>
+                        </details>
+
+                        <!-- model_output -->
+                        <details v-else-if="ev.stage === 'model_output'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>✅ Output Validation</span>
+                            <span v-if="ev.has_german" class="text-green-600/80 dark:text-green-400/80">DE</span>
+                            <span v-if="ev.hashtag_count !== undefined" class="text-muted">#{{ ev.hashtag_count }}</span>
+                            <span v-if="ev.char_count" class="text-muted">{{ ev.char_count }}c</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div class="flex gap-2">
+                              <span class="text-muted/50">German:</span>
+                              <span :class="ev.has_german ? 'text-green-600/80 dark:text-green-400/80' : 'text-warning'">{{ ev.has_german ? '✅ yes' : '⚠️ no' }}</span>
+                            </div>
+                            <div v-if="ev.hashtag_count !== undefined" class="flex gap-2"><span class="text-muted/50">hashtags:</span><span class="text-muted/70">{{ ev.hashtag_count }}</span></div>
+                            <div v-if="ev.char_count !== undefined" class="flex gap-2"><span class="text-muted/50">characters:</span><span class="text-muted/70">{{ ev.char_count }}</span></div>
+                            <div v-if="ev.validation" class="space-y-0.5">
+                              <span class="text-muted/50">validation details:</span>
+                              <div v-for="(val, vkey) in ev.validation" :key="vkey" class="ml-2 text-muted/60"><span class="font-mono">{{ vkey }}:</span> {{ String(val) }}</div>
+                            </div>
+                          </div>
+                        </details>
+
+                        <!-- agent_complete -->
+                        <details v-else-if="ev.stage === 'agent_complete'" class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span>🏁 Complete</span>
+                            <span v-if="ev.elapsed_seconds !== undefined" class="text-muted">{{ ev.elapsed_seconds }}s</span>
+                            <span v-if="ev.message_count" class="text-muted">{{ ev.message_count }} msgs</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-if="ev.elapsed_seconds !== undefined" class="flex gap-2"><span class="text-muted/50">elapsed:</span><span class="text-muted/70">{{ ev.elapsed_seconds }}s</span></div>
+                            <div v-if="ev.message_count" class="flex gap-2"><span class="text-muted/50">messages:</span><span class="text-muted/70">{{ ev.message_count }}</span></div>
+                          </div>
+                        </details>
+
+                        <!-- fallback -->
+                        <details v-else class="border border-dashed border-default/40 rounded px-2 py-1">
+                          <summary class="flex items-center gap-2 cursor-pointer text-[10px] text-toned hover:text-default select-none">
+                            <span class="text-muted/70">{{ ev.stage }}</span>
+                          </summary>
+                          <div class="mt-1 space-y-0.5 text-[10px] text-toned">
+                            <div v-for="(val, k) in ev" :key="k" class="flex gap-2">
+                              <span class="text-muted/50">{{ k }}:</span><span class="text-muted/70">{{ typeof val === 'object' ? JSON.stringify(val) : String(val) }}</span>
+                            </div>
+                          </div>
+                        </details>
+                      </template>
+                    </div>
+                  </details>
+                </div>
               </div>
             </div>
           </div>

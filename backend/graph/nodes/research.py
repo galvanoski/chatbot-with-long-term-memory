@@ -1,4 +1,5 @@
 import logging
+import time
 
 from backend.graph.state import AgentState
 from backend.graph.tools.rag import query_product_catalog, query_meme_repository
@@ -26,9 +27,32 @@ def research_node(state: AgentState) -> dict:
     research_query = _build_research_query(state) or user_message
     logger.info("research_node: query=%s", research_query[:80])
 
+    _rag_trace: list[dict] = []
+
     # Query RAG for relevant products and memes
+    product_start = time.time()
     products = query_product_catalog(research_query, top_k=3)
+    product_latency = (time.time() - product_start) * 1000
+    _rag_trace.append({
+        "stage": "product_search",
+        "docs": len(products),
+        "latency_ms": round(product_latency, 1),
+        "products": [{
+            "sku": p.get("metadata", {}).get("sku", p.get("id", "?")),
+            "name": p.get("metadata", {}).get("name", "Unnamed product"),
+            "category": p.get("metadata", {}).get("category", ""),
+        } for p in products],
+    })
+
+    meme_start = time.time()
     memes = query_meme_repository(research_query, top_k=2)
+    meme_latency = (time.time() - meme_start) * 1000
+    _rag_trace.append({
+        "stage": "meme_search",
+        "docs": len(memes),
+        "latency_ms": round(meme_latency, 1),
+        "memes": [{"text": m["text"][:150]} for m in memes],
+    })
 
     product_context = []
     for p in products:
@@ -60,4 +84,5 @@ def research_node(state: AgentState) -> dict:
         "trend_insights": trend_insights,
         "meme_references": [m["text"] for m in memes],
         "_current_node": "research",
+        "_rag_trace": _rag_trace,
     }

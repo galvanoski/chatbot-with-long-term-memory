@@ -2,6 +2,7 @@ import logging
 import os
 import json
 import re
+import time
 
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -377,7 +378,23 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
 
     # ── Hook 2: before_model ──
     if mw:
+        context_start = time.time()
         messages = mw.before_model(messages, state)
+        context_latency = (time.time() - context_start) * 1000
+    else:
+        context_latency = 0
+
+    # Capture context_inject event from state after before_model
+    context_s = state.get("brand_rules", {})
+    context_inject_event = {
+        "stage": "context_inject",
+        "latency_ms": round(context_latency, 1),
+        "ltm_docs": len(state.get("ltm_context", [])),
+        "brand_rules": list(context_s.keys()),
+        "product_skus": state.get("product_skus", []),
+    }
+
+    llm_start = time.time()
 
     def invoke(msgs):
         return llm.invoke(msgs)
@@ -392,7 +409,33 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
     if mw:
         response = mw.after_model(response, state)
 
+    llm_latency = (time.time() - llm_start) * 1000
     content = response.content if hasattr(response, "content") else str(response)
+    usage = {}
+    if hasattr(response, "usage_metadata"):
+        usage = response.usage_metadata or {}
+    llm_trace: dict = {
+        "stage": "llm_generate",
+        "latency_ms": round(llm_latency, 1),
+        "node": "copywriter",
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+
+    # model_output trace (derived from response._validation set by after_model)
+    validation = getattr(response, "_validation", {})
+    hashtag_count_validation = validation.get("hashtag_count", 0)
+    has_german = validation.get("has_german", False)
+    char_count = validation.get("char_count", 0)
+    model_output_event = {
+        "stage": "model_output",
+        "has_german": has_german,
+        "hashtag_count": hashtag_count_validation,
+        "char_count": char_count,
+        "validation": validation,
+    }
+
     payload = _extract_json_payload(content)
 
     if payload:
@@ -472,4 +515,9 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
         },
         "approval_status": "pending",
         "_current_node": "copywriter",
+        "_rag_trace": [
+            context_inject_event,
+            llm_trace,
+            model_output_event,
+        ],
     }

@@ -39,6 +39,7 @@ from backend.api.schemas import (
 from backend.graph.tools.rag import load_products_to_catalog
 from backend.memory.manager import MemoryManager
 from backend.middleware.geekcat import GeekCatMiddleware
+from backend.tracking.rag_trace import get_rag_trace
 from backend.tracking.usage import UsageTracker, extract_usage_from_llm_output
 
 logger = logging.getLogger("geekcat.api")
@@ -372,6 +373,7 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
         usage_tracker = UsageTracker()
+        stream_chunks: list[Any] = []
 
         async for event in _graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
@@ -385,6 +387,7 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                     continue
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and hasattr(chunk, "content"):
+                    stream_chunks.append(chunk)
                     token = chunk.content
                     if isinstance(token, str) and token:
                         yield _encode_sse("delta", {"text": token})
@@ -400,6 +403,15 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                             input_tokens=usage.get("input_tokens", 0),
                             output_tokens=usage.get("output_tokens", 0),
                         )
+
+        # Fallback: if no usage was tracked via on_llm_end, try accumulated chunks
+        if not usage_tracker._calls and stream_chunks:
+            from backend.tracking.usage import extract_usage_from_chunks, UsageInfo
+            chunk_usage = extract_usage_from_chunks(stream_chunks)
+            if chunk_usage:
+                model_name = "openai/gpt-5-mini"
+                u = UsageInfo(model=model_name, input_tokens=chunk_usage.get("input_tokens", 0), output_tokens=chunk_usage.get("output_tokens", 0))
+                usage_tracker.add(model=model_name, input_tokens=u.input_tokens, output_tokens=u.output_tokens)
 
         state_snapshot = await _graph.aget_state(config)
         snap_values = state_snapshot.values if state_snapshot else {}
@@ -419,13 +431,28 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
 
         payload = _build_thread_payload(existing_thread, snap_values)
 
-        # Attach aggregate token usage to the last assistant message
+        # Attach aggregate token usage and RAG trace to the last assistant message
         usage_dict = usage_tracker.to_dict() if usage_tracker._calls else None
-        if usage_dict:
-            for msg in reversed(payload.get("messages", [])):
-                if msg.get("role") == "assistant":
+        # Merge middleware events (context var, before/after graph) with state-based events (inside graph nodes)
+        middleware_trace = get_rag_trace()
+        state_trace = snap_values.get("_rag_trace", [])
+        if state_trace and middleware_trace:
+            # The last middleware event is always agent_complete; keep it after graph events
+            if len(middleware_trace) >= 2:
+                rag_trace_data = middleware_trace[:-1] + state_trace + middleware_trace[-1:]
+            else:
+                rag_trace_data = middleware_trace + state_trace
+        elif state_trace:
+            rag_trace_data = state_trace
+        else:
+            rag_trace_data = middleware_trace
+        for msg in reversed(payload.get("messages", [])):
+            if msg.get("role") == "assistant":
+                if usage_dict:
                     msg["usage"] = usage_dict
-                    break
+                if rag_trace_data:
+                    msg["rag_trace"] = rag_trace_data
+                break
 
         now = _utc_now_iso()
         cached_thread = _thread_cache_update(thread_id, {
@@ -599,6 +626,9 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         assistant_msg = {"id": msg_id, "role": "assistant", "content": content, "created_at": now}
         if usage_dict:
             assistant_msg["usage"] = usage_dict
+        rag_trace_data = get_rag_trace()
+        if rag_trace_data:
+            assistant_msg["rag_trace"] = rag_trace_data
         thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
 
         cached_thread = _thread_cache_update(thread_id, {
@@ -1484,6 +1514,7 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
         usage_tracker = UsageTracker()
+        stream_chunks: list[Any] = []
 
         async for event in _graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
@@ -1492,6 +1523,7 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
             if kind == "on_chat_model_stream" and name == "ChatOpenAI":
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and hasattr(chunk, "content"):
+                    stream_chunks.append(chunk)
                     token = chunk.content
                     if isinstance(token, str) and token:
                         yield _encode_sse("delta", {"text": token})
@@ -1507,6 +1539,15 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
                             input_tokens=usage.get("input_tokens", 0),
                             output_tokens=usage.get("output_tokens", 0),
                         )
+
+        # Fallback: if no usage was tracked via on_llm_end, try accumulated chunks
+        if not usage_tracker._calls and stream_chunks:
+            from backend.tracking.usage import extract_usage_from_chunks, UsageInfo
+            chunk_usage = extract_usage_from_chunks(stream_chunks)
+            if chunk_usage:
+                model_name = "openai/gpt-5-mini"
+                u = UsageInfo(model=model_name, input_tokens=chunk_usage.get("input_tokens", 0), output_tokens=chunk_usage.get("output_tokens", 0))
+                usage_tracker.add(model=model_name, input_tokens=u.input_tokens, output_tokens=u.output_tokens)
 
         state_snapshot = await _graph.aget_state(config)
         snap_values = state_snapshot.values if state_snapshot else {}
@@ -1526,13 +1567,26 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
         thread = _thread_cache_set(thread)
         payload = _build_thread_payload(thread, snap_values)
 
-        # Attach aggregate token usage to the last assistant message
+        # Attach aggregate token usage and RAG trace to the last assistant message
         usage_dict = usage_tracker.to_dict() if usage_tracker._calls else None
-        if usage_dict:
-            for msg in reversed(payload.get("messages", [])):
-                if msg.get("role") == "assistant":
+        middleware_trace = get_rag_trace()
+        state_trace = snap_values.get("_rag_trace", [])
+        if state_trace and middleware_trace:
+            if len(middleware_trace) >= 2:
+                rag_trace_data = middleware_trace[:-1] + state_trace + middleware_trace[-1:]
+            else:
+                rag_trace_data = middleware_trace + state_trace
+        elif state_trace:
+            rag_trace_data = state_trace
+        else:
+            rag_trace_data = middleware_trace
+        for msg in reversed(payload.get("messages", [])):
+            if msg.get("role") == "assistant":
+                if usage_dict:
                     msg["usage"] = usage_dict
-                    break
+                if rag_trace_data:
+                    msg["rag_trace"] = rag_trace_data
+                break
 
         now = _utc_now_iso()
         cached_thread = _thread_cache_update(thread_id, {

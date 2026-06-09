@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 
 from backend.middleware.base import AgentMiddleware
 from backend.memory.manager import MemoryManager
+from backend.tracking.rag_trace import add_rag_trace, reset_rag_trace
 
 logger = logging.getLogger("geekcat.middleware")
 
@@ -47,13 +48,22 @@ class GeekCatMiddleware(AgentMiddleware):
 
         logger.info("before_agent: user=%s thread=%s", user_id, config["configurable"].get("thread_id"))
 
+        # Reset RAG trace for this request
+        reset_rag_trace()
+        state["_rag_trace"] = []
+        add_rag_trace("agent_start", user_id=user_id, query=query[:200])
+
         # Load brand rules from LTM
         brand_rules = self.memory.get_brand_rules(user_id)
         state["brand_rules"] = brand_rules
 
         # Retrieve relevant LTM context via hybrid search
+        ltm_start = time.time()
         ltm_context = self.memory.retrieve(user_id, query, k=5)
+        ltm_latency = (time.time() - ltm_start) * 1000
         state["ltm_context"] = [m["text"] for m in ltm_context]
+        ltm_texts = [m["text"][:200] for m in ltm_context]
+        add_rag_trace("ltm_retrieve", docs=len(ltm_context), latency_ms=round(ltm_latency, 1), texts=ltm_texts)
 
         # Init analytics
         _request_start_time.set(time.time())
@@ -72,6 +82,8 @@ class GeekCatMiddleware(AgentMiddleware):
         state: dict,
     ) -> list[BaseMessage]:
         """Inject RAG + LTM context into system prompt, adaptive compaction."""
+        start = time.time()
+
         # Adaptive compaction check
         messages = self.memory.compact_if_needed(messages)
 
@@ -238,6 +250,7 @@ class GeekCatMiddleware(AgentMiddleware):
 
         # Attach validation to response
         response._validation = validation
+
         return response
 
     # ──────────────────────────────────────────────
@@ -264,6 +277,12 @@ class GeekCatMiddleware(AgentMiddleware):
 
         # Rebuild BM25 index
         self.memory.rebuild_bm25_index(user_id)
+
+        add_rag_trace(
+            "agent_complete",
+            elapsed_seconds=round(elapsed, 2),
+            message_count=len(messages),
+        )
 
         # Strip temp fields before returning
         state.pop("_analytics_log", None)
