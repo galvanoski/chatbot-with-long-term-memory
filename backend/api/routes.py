@@ -513,6 +513,7 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         _save_thread_record(cached_thread)
 
         yield _encode_sse("done", {
+            "title": cached_thread.get("title"),
             "status": "active",
             "messages": cached_thread.get("messages", []),
             "pending_copy": cached_thread.get("pending_copy"),

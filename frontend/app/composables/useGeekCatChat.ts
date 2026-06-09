@@ -510,11 +510,16 @@ export function useGeekCatChat() {
         }
 
         if (event === 'done' && payload && typeof payload === 'object') {
-          const p = payload as Record<string, unknown>
-          currentThread.value!.messages = (p.messages as Thread['messages']) ?? currentThread.value!.messages
+          const streamedAssistantText = messages.value.find(m => m.id === assistantStreamId)?.parts?.[0]?.text ?? ''
+          const res = parseValidatedResponse(threadActionResponseSchema, payload, 'Image prompt response')
+          currentThread.value!.messages = res.messages
+          currentThread.value!.title = res.title ?? currentThread.value!.title
+          currentThread.value!.status = res.status
           currentThread.value!.updated_at = new Date().toISOString()
-          messages.value = transformMessages(currentThread.value!.messages)
           upsertThreadListItem(currentThread.value!)
+
+          const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
+          messages.value = finalUiMessages
           return
         }
 
