@@ -2,9 +2,11 @@
 const route = useRoute()
 const chatId = route.params.id as string
 const initialPrompt = computed(() => typeof route.query.prompt === 'string' ? route.query.prompt : '')
+const initialImagePrompt = computed(() => typeof route.query.imagePrompt === 'string' ? route.query.imagePrompt : '')
 const debugEnabled = computed(() => route.query.debug === '1')
 
 const initialPromptSent = ref(false)
+const initialImagePromptSent = ref(false)
 const regenerateProcessing = ref(false)
 
 const chat = useGeekCatChat()
@@ -16,6 +18,9 @@ async function send() {
   if (!input.value.trim() || unref(chat.loading) || unref(chat.sending)) return
   const text = input.value
   input.value = ''
+  if (text.startsWith('Generate a logo prompt')) {
+    return chat.generateImagePrompt(text)
+  }
   return chat.sendMessage(text)
 }
 
@@ -28,6 +33,13 @@ async function retryLoadThread() {
 }
 
 onMounted(async () => {
+  if (initialImagePrompt.value && !initialImagePromptSent.value) {
+    initialImagePromptSent.value = true
+    await chat.generateImagePrompt(initialImagePrompt.value)
+    await navigateTo(`/chat/${chatId}`, { replace: true })
+    return
+  }
+
   if (!initialPrompt.value || initialPromptSent.value) return
   if (currentThread.value?.messages?.length) return
 
@@ -333,9 +345,17 @@ const debugState = computed(() => JSON.stringify({
         <div ref="scrollBottomRef" class="h-px" aria-hidden="true" />
       </div>
       <div class="chat-composer-shell">
-        <div class="mx-auto w-full max-w-3xl">
+        <div class="mx-auto w-full max-w-3xl space-y-2">
           <form class="chat-composer-form" @submit.prevent="send">
             <UButton icon="i-lucide-plus" variant="ghost" color="neutral" class="rounded-full" />
+            <UButton
+              icon="i-lucide-wand-sparkles"
+              variant="ghost"
+              color="neutral"
+              class="rounded-full"
+              :disabled="isLoading"
+              @click="input = 'Generate a logo prompt for: '"
+            />
             <UChatPrompt
               v-model="input"
               data-testid="chat-prompt"

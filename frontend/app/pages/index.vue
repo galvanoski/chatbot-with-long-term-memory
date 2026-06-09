@@ -1,14 +1,10 @@
 <script setup lang="ts">
 const input = ref('')
 const loading = ref(false)
-const isMounted = ref(false)
 
 const chat = useGeekCatChat()
 const chatError = computed(() => chat.error.value)
 
-onMounted(() => {
-  isMounted.value = true
-})
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -32,9 +28,10 @@ async function onSubmit() {
   try {
     const id = await chat.createThread()
     if (id) {
+      const isImagePrompt = prompt.startsWith('Generate a logo prompt')
       await navigateTo({
         path: `/chat/${id}`,
-        query: { prompt }
+        query: isImagePrompt ? { imagePrompt: prompt } : { prompt }
       })
     }
   } finally {
@@ -52,8 +49,6 @@ const suggestions = [
 
 <template>
   <div class="flex-1 flex flex-col items-center justify-center gap-6 p-8">
-    <span v-if="isMounted" data-testid="home-mounted" class="hidden" />
-
     <UAlert
       v-if="chatError"
       class="w-full max-w-2xl"
@@ -110,5 +105,15 @@ const suggestions = [
         @click="input = s.label"
       />
     </div>
+
+    <UButton
+      icon="i-lucide-wand-sparkles"
+      label="Generate a logo prompt"
+      size="sm"
+      color="neutral"
+      variant="outline"
+      class="rounded-full"
+      @click="input = 'Generate a logo prompt for: '"
+    />
   </div>
 </template>

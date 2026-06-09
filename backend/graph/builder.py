@@ -2,12 +2,13 @@ import logging
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from backend.graph.state import AgentState
 from backend.graph.nodes.research import research_node
 from backend.graph.nodes.copywriter import copywriter_node
 from backend.graph.nodes.publisher import publisher_node
+from backend.graph.nodes.image_prompt import image_prompt_node
 from backend.graph.conditions import should_approve
 
 logger = logging.getLogger("geekcat.graph.builder")
@@ -26,6 +27,12 @@ async def _get_checkpoint_saver() -> AsyncSqliteSaver:
     return _checkpoint_saver
 
 
+def _entry_router(state: AgentState) -> str:
+    if state.get("_current_node") == "image_prompt_generator":
+        return "image_prompt_generator"
+    return "research"
+
+
 async def build_marketing_graph(
     middleware: object | None = None,
 ) -> StateGraph:
@@ -33,6 +40,7 @@ async def build_marketing_graph(
 
     Flow:
       research → copywriter → [HITL interrupt] → publisher → END
+      image_prompt_generator → END (standalone, via conditional entry)
 
     Args:
         middleware: Optional GeekCatMiddleware instance. If provided,
@@ -50,9 +58,22 @@ async def build_marketing_graph(
         lambda state: copywriter_node(state, mw=middleware),
     )
     builder.add_node("publisher", publisher_node)
+    builder.add_node(
+        "image_prompt_generator",
+        lambda state: image_prompt_node(state, mw=middleware),
+    )
 
-    # ── Edges ──
-    builder.set_entry_point("research")
+    # ── Entry routing ──
+    builder.add_conditional_edges(
+        START,
+        _entry_router,
+        {
+            "research": "research",
+            "image_prompt_generator": "image_prompt_generator",
+        },
+    )
+
+    # ── Main pipeline edges ──
     builder.add_edge("research", "copywriter")
 
     # Conditional: HITL before publish
@@ -66,6 +87,7 @@ async def build_marketing_graph(
     )
 
     builder.add_edge("publisher", END)
+    builder.add_edge("image_prompt_generator", END)
 
     # ── Compile with checkpointer + HITL interrupt ──
     checkpointer = await _get_checkpoint_saver()

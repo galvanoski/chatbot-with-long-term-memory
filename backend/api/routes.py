@@ -1,7 +1,8 @@
 import datetime as dt
 import asyncio
-import logging
 import json
+import logging
+import os
 import sqlite3
 import threading
 import re
@@ -11,7 +12,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
 
 from backend.api.schemas import (
@@ -21,6 +23,7 @@ from backend.api.schemas import (
     BrandRuleSaveResponse,
     DeleteThreadResponse,
     DeleteMemoryResponse,
+    ImagePromptRequest,
     MemoryItem,
     MemoryListResponse,
     MessageSendRequest,
@@ -420,6 +423,82 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
     except Exception as exc:
         logger.exception("stream send_message failed")
+        yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
+
+
+async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
+    try:
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": body.user_id,
+            }
+        }
+
+        initial_state = _middleware.before_agent(
+            {
+                "messages": [HumanMessage(content=body.instruction)],
+                "user_id": body.user_id,
+                "thread_id": thread_id,
+                "_current_node": "image_prompt_generator",
+                "image_prompt_instruction": body.instruction,
+            },
+            config,
+        )
+
+        yield _encode_sse("start", {"status": "active"})
+
+        async for event in _graph.astream_events(initial_state, config=config, version="v2"):
+            kind = event.get("event", "")
+            name = event.get("name", "")
+            metadata = event.get("metadata") or {}
+            node_name = str(metadata.get("langgraph_node") or "")
+
+            if kind == "on_chat_model_stream" and name == "ChatOpenAI":
+                if node_name and node_name != "image_prompt_generator":
+                    continue
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and hasattr(chunk, "content"):
+                    token = chunk.content
+                    if isinstance(token, str) and token:
+                        yield _encode_sse("delta", {"text": token})
+
+        state_snapshot = await _graph.aget_state(config)
+        snap_values = state_snapshot.values if state_snapshot else {}
+        raw_result = (snap_values.get("image_prompt_result") or "").strip()
+
+        thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id,
+            "user_id": body.user_id,
+            "title": None,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "status": "active",
+            "messages": [],
+        }
+        thread = _thread_cache_set(thread)
+
+        now = _utc_now_iso()
+        msg_id = str(uuid.uuid4())
+        content = f"🎨 **Image Prompt:**\n\n{raw_result}" if raw_result else "Could not generate image prompt."
+        assistant_msg = {"id": msg_id, "role": "assistant", "content": content, "created_at": now}
+        thread["messages"] = list(thread.get("messages", [])) + [assistant_msg]
+
+        cached_thread = _thread_cache_update(thread_id, {
+            "messages": thread["messages"],
+            "updated_at": now,
+        })
+        _save_thread_record(cached_thread)
+
+        yield _encode_sse("done", {
+            "status": "active",
+            "messages": cached_thread.get("messages", []),
+            "pending_copy": cached_thread.get("pending_copy"),
+        })
+    except HTTPException as exc:
+        yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+    except Exception as exc:
+        logger.exception("generate image prompt failed")
         yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
@@ -944,6 +1023,15 @@ def send_message_stream(thread_id: str, body: MessageSendRequest):
 
     return StreamingResponse(
         _sse_send_message(thread_id, body),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/chat/threads/{thread_id}/image-prompt/stream")
+def generate_image_prompt_stream(thread_id: str, body: ImagePromptRequest):
+    return StreamingResponse(
+        _sse_generate_image_prompt(thread_id, body),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

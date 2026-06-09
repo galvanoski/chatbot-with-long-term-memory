@@ -30,6 +30,10 @@ class AgentState(TypedDict):
     # ── Publisher node output ──
     publication_result: Optional[dict]
 
+    # ── Image prompt generator ──
+    image_prompt_instruction: Optional[str]
+    image_prompt_result: Optional[str]
+
     # ── Long-term memory context (set by middleware.before_agent) ──
     brand_rules: dict
     ltm_context: list[str]

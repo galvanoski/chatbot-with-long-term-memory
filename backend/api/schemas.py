@@ -26,6 +26,11 @@ class RegenerateRequest(BaseModel):
     instruction: Optional[str] = None
 
 
+class ImagePromptRequest(BaseModel):
+    user_id: str
+    instruction: str = "a cat programmer logo"
+
+
 class BrandRuleSaveRequest(BaseModel):
     user_id: str
     key: str

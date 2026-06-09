@@ -333,11 +333,7 @@ export function useGeekCatChat() {
             if (message.id !== assistantStreamId) return message
             const current = message.parts?.[0]?.text ?? message.content ?? ''
             const next = `${current}${deltaText}`
-            return {
-              ...message,
-              content: next,
-              parts: [{ type: 'text' as const, text: next }]
-            }
+            return { ...message, content: next, parts: [{ type: 'text' as const, text: next }] }
           })
           return
         }
@@ -449,6 +445,96 @@ export function useGeekCatChat() {
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to reject'
       return false
     } finally {
+      loading.value = false
+    }
+  }
+
+  async function generateImagePrompt(instruction: string): Promise<boolean> {
+    if (!currentThread.value || loading.value) return false
+    const previousUiMessages = [...messages.value]
+    cancelMessageAnimation()
+    const controller = new AbortController()
+    animationController.value = controller
+
+    const optimisticUserMessage = {
+      id: `temp-user-${Date.now()}`,
+      role: 'user' as const,
+      content: instruction,
+      created_at: new Date().toISOString()
+    }
+    messages.value = [
+      ...previousUiMessages,
+      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: instruction }] }
+    ]
+
+    loading.value = true
+    error.value = null
+    try {
+      const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/image-prompt/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction })
+      })
+
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('Image prompt endpoint unavailable')
+      }
+
+      const assistantStreamId = `temp-image-${Date.now()}`
+      messages.value = [
+        ...messages.value,
+        {
+          id: assistantStreamId,
+          role: 'assistant',
+          name: 'The Geek Cat',
+          content: '',
+          created_at: new Date().toISOString(),
+          parts: [{ type: 'text' as const, text: '' }]
+        }
+      ]
+
+      await consumeSSEStream(streamResponse.body, async (event, payload) => {
+        if (controller.signal.aborted) return
+
+        if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
+          const deltaText = String((payload as { text?: unknown }).text ?? '')
+          if (!deltaText) return
+
+          messages.value = messages.value.map((message) => {
+            if (message.id !== assistantStreamId) return message
+            const current = message.parts?.[0]?.text ?? message.content ?? ''
+            const next = `${current}${deltaText}`
+            return { ...message, content: next, parts: [{ type: 'text' as const, text: next }] }
+          })
+          return
+        }
+
+        if (event === 'done' && payload && typeof payload === 'object') {
+          const p = payload as Record<string, unknown>
+          currentThread.value!.messages = (p.messages as Thread['messages']) ?? currentThread.value!.messages
+          currentThread.value!.updated_at = new Date().toISOString()
+          messages.value = transformMessages(currentThread.value!.messages)
+          upsertThreadListItem(currentThread.value!)
+          return
+        }
+
+        if (event === 'error') {
+          const detail = typeof payload === 'object' && payload && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Image prompt generation failed')
+            : 'Image prompt generation failed'
+          throw new Error(detail)
+        }
+      })
+
+      return true
+    } catch (errorValue: unknown) {
+      messages.value = previousUiMessages
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate image prompt'
+      return false
+    } finally {
+      if (animationController.value === controller) {
+        animationController.value = null
+      }
       loading.value = false
     }
   }
@@ -568,6 +654,7 @@ export function useGeekCatChat() {
     rejectCopy,
     regenerateCopy,
     pollState,
-    cancelMessageAnimation
+    cancelMessageAnimation,
+    generateImagePrompt
   }
 }
