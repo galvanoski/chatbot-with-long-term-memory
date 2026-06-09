@@ -338,6 +338,13 @@ const debugState = computed(() => JSON.stringify({
                     <span>{{ source.label }}</span>
                   </a>
                 </div>
+
+                <div v-if="msg.usage" class="flex items-center gap-3 mt-1 text-[10px] text-muted select-none">
+                  <span>{{ msg.usage.model }}</span>
+                  <span>⬆ {{ msg.usage.input_tokens }}</span>
+                  <span>⬇ {{ msg.usage.output_tokens }}</span>
+                  <span>${{ msg.usage.cost.toFixed(5) }}</span>
+                </div>
               </div>
             </div>
           </div>

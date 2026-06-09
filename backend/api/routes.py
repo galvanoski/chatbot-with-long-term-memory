@@ -39,6 +39,7 @@ from backend.api.schemas import (
 from backend.graph.tools.rag import load_products_to_catalog
 from backend.memory.manager import MemoryManager
 from backend.middleware.geekcat import GeekCatMiddleware
+from backend.tracking.usage import UsageTracker, extract_usage_from_llm_output
 
 logger = logging.getLogger("geekcat.api")
 
@@ -370,6 +371,8 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
 
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
+        usage_tracker = UsageTracker()
+
         async for event in _graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
             name = event.get("name", "")
@@ -385,6 +388,18 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                     token = chunk.content
                     if isinstance(token, str) and token:
                         yield _encode_sse("delta", {"text": token})
+
+            if kind == "on_llm_end" and name == "ChatOpenAI":
+                output = event.get("data", {}).get("output")
+                if output:
+                    usage = extract_usage_from_llm_output(output)
+                    if usage:
+                        model = getattr(output, "response_metadata", {}).get("model", "") or ""
+                        usage_tracker.add(
+                            model=model,
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                        )
 
         state_snapshot = await _graph.aget_state(config)
         snap_values = state_snapshot.values if state_snapshot else {}
@@ -403,6 +418,14 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         existing_thread = _thread_cache_set(existing_thread)
 
         payload = _build_thread_payload(existing_thread, snap_values)
+
+        # Attach aggregate token usage to the last assistant message
+        usage_dict = usage_tracker.to_dict() if usage_tracker._calls else None
+        if usage_dict:
+            for msg in reversed(payload.get("messages", [])):
+                if msg.get("role") == "assistant":
+                    msg["usage"] = usage_dict
+                    break
 
         now = _utc_now_iso()
         cached_thread = _thread_cache_update(thread_id, {
@@ -476,13 +499,25 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
 
         # Stream tokens directly from the LLM (no graph state contamination)
         result_parts: list[str] = []
+        stream_chunks: list[Any] = []
         async for chunk in llm.astream(messages):
+            stream_chunks.append(chunk)
             content = chunk.content if hasattr(chunk, "content") else ""
             if isinstance(content, str) and content:
                 result_parts.append(content)
                 yield _encode_sse("delta", {"text": content})
 
         raw_result = "".join(result_parts).strip()
+
+        # Extract usage from stream chunks
+        usage_dict = None
+        from backend.tracking.usage import extract_usage_from_chunks
+        chunk_usage = extract_usage_from_chunks(stream_chunks)
+        if chunk_usage:
+            model_name = "openai/gpt-5-mini"
+            from backend.tracking.usage import UsageInfo
+            u = UsageInfo(model=model_name, input_tokens=chunk_usage.get("input_tokens", 0), output_tokens=chunk_usage.get("output_tokens", 0))
+            usage_dict = u.to_dict()
 
         # Apply after_model middleware
         response = type("Response", (), {"content": raw_result})()
@@ -504,6 +539,8 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         msg_id = str(uuid.uuid4())
         content = f"🎨 **Image Prompt:**\n\n{raw_result}" if raw_result else "Could not generate image prompt."
         assistant_msg = {"id": msg_id, "role": "assistant", "content": content, "created_at": now}
+        if usage_dict:
+            assistant_msg["usage"] = usage_dict
         thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
 
         cached_thread = _thread_cache_update(thread_id, {
@@ -622,8 +659,8 @@ def _merge_thread_messages(existing_messages: list[dict], extracted_messages: li
         signature = _message_signature(message)
         if signature == last_signature:
             continue
-        if signature in seen_signatures and str(message.get("role") or "") == "user":
-            # Prevent repeated user prompts from being re-appended by compacted graph windows.
+        if signature in seen_signatures:
+            # Already present in persisted history (user or assistant).
             continue
         merged.append(message)
         seen_signatures.add(signature)
@@ -1388,6 +1425,8 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
 
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
+        usage_tracker = UsageTracker()
+
         async for event in _graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
             name = event.get("name", "")
@@ -1398,6 +1437,18 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
                     token = chunk.content
                     if isinstance(token, str) and token:
                         yield _encode_sse("delta", {"text": token})
+
+            if kind == "on_llm_end" and name == "ChatOpenAI":
+                output = event.get("data", {}).get("output")
+                if output:
+                    usage = extract_usage_from_llm_output(output)
+                    if usage:
+                        model = getattr(output, "response_metadata", {}).get("model", "") or ""
+                        usage_tracker.add(
+                            model=model,
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                        )
 
         state_snapshot = await _graph.aget_state(config)
         snap_values = state_snapshot.values if state_snapshot else {}
@@ -1416,6 +1467,14 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
         }
         thread = _thread_cache_set(thread)
         payload = _build_thread_payload(thread, snap_values)
+
+        # Attach aggregate token usage to the last assistant message
+        usage_dict = usage_tracker.to_dict() if usage_tracker._calls else None
+        if usage_dict:
+            for msg in reversed(payload.get("messages", [])):
+                if msg.get("role") == "assistant":
+                    msg["usage"] = usage_dict
+                    break
 
         now = _utc_now_iso()
         cached_thread = _thread_cache_update(thread_id, {

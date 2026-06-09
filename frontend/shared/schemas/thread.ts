@@ -1,11 +1,19 @@
 import { z } from 'zod'
 
+export const tokenUsageSchema = z.object({
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  model: z.string(),
+  cost: z.number()
+})
+
 export const threadMessageSchema = z.object({
   id: z.string(),
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
   created_at: z.string(),
-  pending_approval: z.boolean().optional()
+  pending_approval: z.boolean().optional(),
+  usage: tokenUsageSchema.optional()
 })
 
 export const threadSourceSchema = z.object({

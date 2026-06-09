@@ -4,6 +4,12 @@ export interface Message {
   content: string
   created_at: string
   pending_approval?: boolean
+  usage?: {
+    input_tokens: number
+    output_tokens: number
+    model: string
+    cost: number
+  }
 }
 
 export interface UIMessage {
@@ -17,6 +23,12 @@ export interface UIMessage {
   }>
   created_at: string
   pending_approval?: boolean
+  usage?: {
+    input_tokens: number
+    output_tokens: number
+    model: string
+    cost: number
+  }
 }
 
 export interface Thread {
