@@ -426,10 +426,32 @@ def _fetch_url_text(url: str, timeout: int = 10) -> str | None:
                 return None
             raw = resp.read().decode("utf-8", errors="replace")
             text = _html_to_text(raw)
-            # Truncate to avoid huge context
             return text[:5000] if text else None
     except Exception:
         return None
+
+
+def _md_headings_to_html(text: str) -> str:
+    """Convert markdown headings (# ## ###) to HTML tags in a text block.
+    The first heading becomes H1 regardless of level; subsequent headings
+    map to their standard HTML level (## → H2, ### → H3)."""
+    lines = text.split("\n")
+    result: list[str] = []
+    h1_done = False
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if m:
+            level = len(m.group(1))
+            content = m.group(2).strip()
+            if not h1_done:
+                result.append(f"<h1>{content}</h1>")
+                h1_done = True
+            else:
+                result.append(f"<h{level}>{content}</h{level}>")
+        else:
+            result.append(line)
+    return "\n".join(result)
 
 
 async def _sse_send_message(thread_id: str, body: MessageSendRequest):
@@ -885,45 +907,46 @@ async def _sse_generate_seo(thread_id: str, body: SEORequest):
                 text = re.sub(r"^```(?:json)?\s*", "", text)
                 text = re.sub(r"\s*```$", "", text)
             payload = json.loads(text)
+            desc_raw = str(payload.get("seo_description") or "")
+            desc_html = _md_headings_to_html(desc_raw)
             seo_metadata = {
                 "seo_title": payload.get("seo_title", ""),
                 "focus_keyword": payload.get("focus_keyword", ""),
                 "secondary_keywords": payload.get("secondary_keywords", []),
                 "meta_description": payload.get("meta_description", ""),
-                "seo_description": payload.get("seo_description", ""),
+                "seo_description": desc_html,
                 "url_slug": payload.get("url_slug", ""),
                 "alt_text": payload.get("alt_text", ""),
             }
         except Exception:
             logger.warning("_sse_generate_seo: failed to parse JSON from LLM output, using raw")
 
-        # Build formatted display text (strip HTML from description)
+        # Build formatted display text
         def _fmt(val: str) -> str:
             return val.strip() if val else ""
 
         seo_desc_raw = seo_metadata.get("seo_description", "")
         if seo_desc_raw and ("<" in seo_desc_raw and ">" in seo_desc_raw):
             seo_desc_clean = _html_to_text(seo_desc_raw)
-            seo_metadata["seo_description"] = seo_desc_clean
         else:
             seo_desc_clean = seo_desc_raw
 
         if seo_metadata.get("seo_title"):
             parts = []
             if _fmt(seo_metadata.get("seo_title")):
-                parts.append(f"**SEO Title:** {seo_metadata['seo_title']}")
+                parts.append(f"SEO Title: {seo_metadata['seo_title']}")
             if _fmt(seo_metadata.get("focus_keyword")):
-                parts.append(f"**Focus Keyword:** {seo_metadata['focus_keyword']}")
+                parts.append(f"Focus Keyword: {seo_metadata['focus_keyword']}")
             if seo_metadata.get("secondary_keywords"):
-                parts.append(f"**Secondary Keywords:** {', '.join(seo_metadata['secondary_keywords'])}")
+                parts.append(f"Secondary Keywords: {', '.join(seo_metadata['secondary_keywords'])}")
             if _fmt(seo_metadata.get("meta_description")):
-                parts.append(f"**Meta Description:** {seo_metadata['meta_description']}")
+                parts.append(f"Meta Description: {seo_metadata['meta_description']}")
             if _fmt(seo_metadata.get("url_slug")):
-                parts.append(f"**URL Slug:** {seo_metadata['url_slug']}")
+                parts.append(f"URL Slug: {seo_metadata['url_slug']}")
             if _fmt(seo_metadata.get("alt_text")):
-                parts.append(f"**Alt Text:** {seo_metadata['alt_text']}")
-            if _fmt(seo_metadata.get("seo_description")):
-                parts.append(f"\n**SEO Description:**\n{seo_metadata['seo_description']}")
+                parts.append(f"Alt Text: {seo_metadata['alt_text']}")
+            if seo_desc_clean:
+                parts.append(f"\nDescription:\n{seo_desc_clean}")
             display_text = "\n\n".join(parts) if parts else raw_result
         else:
             display_text = raw_result
@@ -944,7 +967,7 @@ async def _sse_generate_seo(thread_id: str, body: SEORequest):
         msg_id = str(uuid.uuid4())
         assistant_msg = {
             "id": msg_id, "role": "assistant",
-            "content": f"🔎 **SEO Metadata:**\n\n{display_text}",
+            "content": f"🔎 SEO Metadata\n\n{display_text}",
             "created_at": now,
         }
         if usage_dict:

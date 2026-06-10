@@ -292,6 +292,37 @@ const debugState = computed(() => JSON.stringify({
               </template>
 
               <!-- Stream complete: show final plain text only -->
+              <template v-if="msg.seo_metadata">
+                <div class="space-y-2 text-sm">
+                  <div v-if="msg.seo_metadata.seo_title" class="flex gap-2">
+                    <span class="font-semibold shrink-0">SEO Title:</span>
+                    <span class="text-default">{{ msg.seo_metadata.seo_title }}</span>
+                  </div>
+                  <div v-if="msg.seo_metadata.focus_keyword" class="flex gap-2">
+                    <span class="font-semibold shrink-0">Focus Keyword:</span>
+                    <span class="text-default">{{ msg.seo_metadata.focus_keyword }}</span>
+                  </div>
+                  <div v-if="msg.seo_metadata.secondary_keywords?.length" class="flex gap-2">
+                    <span class="font-semibold shrink-0">Secondary Keywords:</span>
+                    <span class="text-default">{{ msg.seo_metadata.secondary_keywords.join(', ') }}</span>
+                  </div>
+                  <div v-if="msg.seo_metadata.meta_description" class="flex gap-2">
+                    <span class="font-semibold shrink-0">Meta Description:</span>
+                    <span class="text-default">{{ msg.seo_metadata.meta_description }}</span>
+                  </div>
+                  <div v-if="msg.seo_metadata.url_slug" class="flex gap-2">
+                    <span class="font-semibold shrink-0">URL Slug:</span>
+                    <span class="font-mono text-default">{{ msg.seo_metadata.url_slug }}</span>
+                  </div>
+                  <div v-if="msg.seo_metadata.alt_text" class="flex gap-2">
+                    <span class="font-semibold shrink-0">Alt Text:</span>
+                    <span class="text-default">{{ msg.seo_metadata.alt_text }}</span>
+                  </div>
+                  <div v-if="msg.seo_metadata.seo_description" class="mt-3 pt-3 border-t border-default/20">
+                    <div class="seo-description text-default leading-relaxed" v-html="msg.seo_metadata.seo_description" />
+                  </div>
+                </div>
+              </template>
               <p v-else class="chat-assistant-text">{{ messageText(msg) }}</p>
 
               <div
@@ -365,39 +396,7 @@ const debugState = computed(() => JSON.stringify({
                 </div>
 
                 <div v-if="msg.seo_metadata" class="w-full mt-2">
-                  <details class="group">
-                    <summary class="flex items-center gap-1.5 cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-muted/60 hover:text-default select-none py-0.5">
-                      <span class="text-xs font-mono leading-none group-open:block hidden">−</span>
-                      <span class="text-xs font-mono leading-none group-open:hidden block">+</span>
-                      SEO
-                    </summary>
-                    <div class="mt-1.5 space-y-1 text-[10px]">
-                      <div v-if="msg.seo_metadata.seo_title" class="flex gap-2">
-                        <span class="text-muted/50">SEO title:</span>
-                        <span class="text-muted/70 font-semibold">{{ msg.seo_metadata.seo_title }}</span>
-                      </div>
-                      <div v-if="msg.seo_metadata.focus_keyword" class="flex gap-2">
-                        <span class="text-muted/50">Focus keyword:</span>
-                        <span class="font-mono text-muted/70">{{ msg.seo_metadata.focus_keyword }}</span>
-                      </div>
-                      <div v-if="msg.seo_metadata.secondary_keywords?.length" class="flex gap-2">
-                        <span class="text-muted/50">Secondary keywords:</span>
-                        <span class="text-muted/70">{{ msg.seo_metadata.secondary_keywords.join(', ') }}</span>
-                      </div>
-                      <div v-if="msg.seo_metadata.meta_description" class="flex gap-2">
-                        <span class="text-muted/50">Meta description:</span>
-                        <span class="text-muted/70">{{ msg.seo_metadata.meta_description }}</span>
-                      </div>
-                      <div v-if="msg.seo_metadata.url_slug" class="flex gap-2">
-                        <span class="text-muted/50">URL slug:</span>
-                        <span class="font-mono text-muted/70">{{ msg.seo_metadata.url_slug }}</span>
-                      </div>
-                      <div v-if="msg.seo_metadata.alt_text" class="flex gap-2">
-                        <span class="text-muted/50">Alt text:</span>
-                        <span class="text-muted/70">{{ msg.seo_metadata.alt_text }}</span>
-                      </div>
-                    </div>
-                  </details>
+                  <span class="text-[10px] font-semibold uppercase tracking-wide text-muted/40 select-none">SEO</span>
                 </div>
 
                 <div v-if="msg.rag_trace?.length" class="w-full mt-2">
@@ -643,3 +642,42 @@ const debugState = computed(() => JSON.stringify({
     </template>
   </div>
 </template>
+
+<style>
+.seo-description h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 1rem 0 0.5rem;
+  line-height: 1.3;
+}
+.seo-description h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.375rem;
+  line-height: 1.3;
+}
+.seo-description h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.25rem;
+}
+.seo-description p {
+  margin: 0.375rem 0;
+  line-height: 1.6;
+}
+.seo-description ul,
+.seo-description ol {
+  margin: 0.375rem 0;
+  padding-left: 1.25rem;
+}
+.seo-description li {
+  margin: 0.125rem 0;
+}
+.seo-description a {
+  color: var(--color-primary-500);
+  text-decoration: underline;
+}
+.seo-description strong {
+  font-weight: 700;
+}
+</style>

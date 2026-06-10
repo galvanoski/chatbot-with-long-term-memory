@@ -30,7 +30,7 @@ SEO_SYSTEM_PROMPT = (
     "  \"focus_keyword\": \"string (primary keyword)\",\n"
     "  \"secondary_keywords\": [\"string\", \"string\", \"string\"],\n"
     "  \"meta_description\": \"string (around 155-160 chars)\",\n"
-    "  \"seo_description\": \"string (300+ words, SEO-optimized product description with markdown formatting — use **bold**, headings like ## Title, and plain paragraphs — NO HTML tags)\",\n"
+    "  \"seo_description\": \"string (600+ words, SEO-optimized product description — start with `##` followed by the actual product name as the main heading, then write paragraphs; use `##` for each subsection heading too; plain text only, no other formatting)\",\n"
     "  \"url_slug\": \"string (lowercase with hyphens)\",\n"
     "  \"alt_text\": \"string (product image alt text with primary keyword)\",\n"
     "  \"score_estimation\": \"string (estimated Rank Math score based on criteria fulfilled)\"\n"
