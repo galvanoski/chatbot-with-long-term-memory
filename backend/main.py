@@ -13,6 +13,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from backend.api.routes import init_routes, router as api_router
 from backend.api.schemas import HealthResponse
@@ -109,6 +111,12 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router)
+
+    # Serve generated images
+    static_dir = Path(__file__).resolve().parent / "static"
+    static_dir.mkdir(parents=True, exist_ok=True)
+    (static_dir / "images").mkdir(exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.get("/health", response_model=HealthResponse)
     def health():

@@ -36,6 +36,12 @@ class SEORequest(BaseModel):
     instruction: str = "Generate SEO metadata for my product"
 
 
+class ImageGenerationRequest(BaseModel):
+    user_id: str
+    prompt: str = ""
+    source_message_id: Optional[str] = None
+
+
 class BrandRuleSaveRequest(BaseModel):
     user_id: str
     key: str

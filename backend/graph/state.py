@@ -42,6 +42,16 @@ class AgentState(TypedDict):
     image_prompt_instruction: Optional[str]
     image_prompt_result: Optional[str]
 
+    # ── Image generator ──
+    image_url: Optional[str]
+    image_generation_requested: Optional[bool]
+
+    # ── Copywriter trigger (after SEO/image flow) ──
+    run_copywriter_requested: Optional[bool]
+
+    # ── Flow tracking (set by middleware) ──
+    _entry_node: Optional[str]
+
     # ── Long-term memory context (set by middleware.before_agent) ──
     brand_rules: dict
     ltm_context: list[str]

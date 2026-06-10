@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import threading
 from typing import Any
@@ -84,8 +85,11 @@ class SQLiteFTS5(BM25Engine):
         table = self._table_name(namespace)
         conn = sqlite3.connect(self._db_path)
         try:
-            # FTS5 MATCH syntax: wrap each word as a prefix query for partial matches
-            fts_query = " AND ".join(f'"{word}"*' for word in query.split() if word)
+            # FTS5 MATCH syntax: wrap each word as a prefix query for partial matches.
+            # Strip special chars (dots, etc.) that FTS5 cannot parse.
+            safe_words = [re.sub(r'[^\w\-]', '', word) for word in query.split() if word]
+            safe_words = [w for w in safe_words if w]
+            fts_query = " AND ".join(f'"{word}"*' for word in safe_words)
             if not fts_query:
                 return []
             cursor = conn.execute(

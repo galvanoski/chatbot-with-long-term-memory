@@ -366,6 +366,20 @@ export function useGeekCatChat() {
           return
         }
 
+        if (event === 'image_url' && payload && typeof payload === 'object') {
+          const payloadObj = payload as { url?: unknown; message_id?: unknown }
+          const url = String(payloadObj.url ?? '')
+          if (url) {
+            messages.value = messages.value.map((message) => {
+              if (message.id === assistantStreamId) {
+                return { ...message, image_url: url }
+              }
+              return message
+            })
+          }
+          return
+        }
+
         if (event === 'error') {
           const detail = typeof payload === 'object' && payload && 'detail' in payload
             ? String((payload as { detail?: unknown }).detail ?? 'Streaming failed')
@@ -652,6 +666,116 @@ export function useGeekCatChat() {
     }
   }
 
+  async function generateImage(prompt: string, sourceMessageId?: string): Promise<boolean> {
+    if (!currentThread.value || loading.value) return false
+    const previousUiMessages = [...messages.value]
+    cancelMessageAnimation()
+    const controller = new AbortController()
+    animationController.value = controller
+
+    const optimisticUserMessage = {
+      id: `temp-user-${Date.now()}`,
+      role: 'user' as const,
+      content: prompt || 'Generate image',
+      created_at: new Date().toISOString()
+    }
+    messages.value = [
+      ...previousUiMessages,
+      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: prompt || 'Generate image' }] }
+    ]
+
+    loading.value = true
+    error.value = null
+    try {
+      const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/image/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, source_message_id: sourceMessageId })
+      })
+
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('Image endpoint unavailable')
+      }
+
+      const assistantStreamId = `temp-image-${Date.now()}`
+      messages.value = [
+        ...messages.value,
+        {
+          id: assistantStreamId,
+          role: 'assistant',
+          name: 'The Geek Cat',
+          content: '',
+          created_at: new Date().toISOString(),
+          parts: [{ type: 'text' as const, text: '' }]
+        }
+      ]
+
+      await consumeSSEStream(streamResponse.body, async (event, payload) => {
+        if (controller.signal.aborted) return
+
+        if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
+          const deltaText = String((payload as { text?: unknown }).text ?? '')
+          if (!deltaText) return
+          messages.value = messages.value.map((message) => {
+            if (message.id !== assistantStreamId) return message
+            const current = message.parts?.[0]?.text ?? message.content ?? ''
+            const next = `${current}${deltaText}`
+            return { ...message, content: next, parts: [{ type: 'text' as const, text: next }] }
+          })
+          return
+        }
+
+        if (event === 'image_url' && payload && typeof payload === 'object') {
+          const payloadObj = payload as { url?: unknown; message_id?: unknown }
+          const url = String(payloadObj.url ?? '')
+          const messageId = String(payloadObj.message_id ?? '')
+          if (url) {
+            messages.value = messages.value.map((message) => {
+              // Try streaming ID first, then persisted message_id
+              if (message.id === assistantStreamId || (messageId && message.id === messageId)) {
+                return { ...message, image_url: url }
+              }
+              return message
+            })
+          }
+          return
+        }
+
+        if (event === 'done' && payload && typeof payload === 'object') {
+          const streamedAssistantText = messages.value.find(m => m.id === assistantStreamId)?.parts?.[0]?.text ?? ''
+          const res = parseValidatedResponse(threadActionResponseSchema, payload, 'Image response')
+          currentThread.value!.messages = res.messages
+          currentThread.value!.title = res.title ?? currentThread.value!.title
+          currentThread.value!.status = res.status
+          currentThread.value!.updated_at = new Date().toISOString()
+          upsertThreadListItem(currentThread.value!)
+          storeRagTrace(res.rag_trace)
+          const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
+          messages.value = finalUiMessages
+          return
+        }
+
+        if (event === 'error') {
+          const detail = typeof payload === 'object' && payload && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Image generation failed')
+            : 'Image generation failed'
+          throw new Error(detail)
+        }
+      })
+
+      return true
+    } catch (errorValue: unknown) {
+      messages.value = previousUiMessages
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate image'
+      return false
+    } finally {
+      if (animationController.value === controller) {
+        animationController.value = null
+      }
+      loading.value = false
+    }
+  }
+
   async function regenerateCopy(instruction?: string): Promise<boolean> {
     if (!currentThread.value) return false
     const previousThreadMessages = [...currentThread.value.messages]
@@ -771,6 +895,7 @@ export function useGeekCatChat() {
     pollState,
     cancelMessageAnimation,
     generateImagePrompt,
-    generateSEO
+    generateSEO,
+    generateImage
   }
 }

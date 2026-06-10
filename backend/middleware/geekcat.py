@@ -71,6 +71,10 @@ class GeekCatMiddleware(AgentMiddleware):
         _request_analytics.set(analytics)
         state["_analytics_log"] = analytics
 
+        # Track entry node for flow routing
+        if "_entry_node" not in state:
+            state["_entry_node"] = state.get("_current_node", "")
+
         return state
 
     # ──────────────────────────────────────────────

@@ -10,7 +10,12 @@ from backend.graph.nodes.copywriter import copywriter_node
 from backend.graph.nodes.seo import seo_node
 from backend.graph.nodes.publisher import publisher_node
 from backend.graph.nodes.image_prompt import image_prompt_node
-from backend.graph.conditions import should_approve
+from backend.graph.nodes.image_generator import image_generator_node
+from backend.graph.conditions import (
+    should_generate_image,
+    _image_generator_router,
+    _seo_generator_router,
+)
 
 logger = logging.getLogger("geekcat.graph.builder")
 _checkpoint_saver: AsyncSqliteSaver | None = None
@@ -39,17 +44,18 @@ async def build_marketing_graph(
 ) -> StateGraph:
     """Build the multi-agent marketing pipeline StateGraph.
 
-    Flow:
-      research → copywriter → [HITL interrupt] → publisher → END
-      image_prompt_generator → END (standalone, via conditional entry)
+    Two main flows:
 
-    Args:
-        middleware: Optional GeekCatMiddleware instance. If provided,
-                    the copywriter node will invoke hooks 2, 3, and 5.
+    **Flow A — Social media post** (copywriter → image → END):
+      research → copywriter → [image_generator?] → image_generator → END
+                                                         └skip → seo → publisher → END
 
-    Returns:
-        A compiled StateGraph ready for invocation.
+    **Flow B — Merchandise product** (image_prompt → image → SEO → copywriter?):
+      image_prompt_generator → image_generator → seo_generator → [copywriter?]
+                                                                     ├yes → copywriter → Flow A
+                                                                     └no → END
     """
+
     builder = StateGraph(AgentState)
 
     # ── Register nodes ──
@@ -58,6 +64,7 @@ async def build_marketing_graph(
         "copywriter",
         lambda state: copywriter_node(state, mw=middleware),
     )
+    builder.add_node("image_generator", lambda state: image_generator_node(state, mw=middleware))
     builder.add_node("seo_generator", seo_node)
     builder.add_node("publisher", publisher_node)
     builder.add_node(
@@ -77,20 +84,52 @@ async def build_marketing_graph(
 
     # ── Main pipeline edges ──
     builder.add_edge("research", "copywriter")
-    builder.add_edge("copywriter", "seo_generator")
 
-    # Conditional: HITL before publish (after seo)
+    # After copywriter: ask about image → skip or generate
+    builder.add_conditional_edges(
+        "copywriter",
+        should_generate_image,
+        {
+            "image_generator": "image_generator",
+            "skip_image": "seo_generator",
+        },
+    )
+
+    # After image_generator: route based on entry context
+    # Flow A (from copywriter) → END; Flow B (from image_prompt) → seo_generator
+    builder.add_conditional_edges(
+        "image_generator",
+        _image_generator_router,
+        {
+            "seo_generator": "seo_generator",
+            "end": END,
+        },
+    )
+
+    # After image_prompt: ask about image → skip or generate
+    builder.add_conditional_edges(
+        "image_prompt_generator",
+        should_generate_image,
+        {
+            "image_generator": "image_generator",
+            "skip_image": END,
+        },
+    )
+
+    # After seo_generator: route based on entry context
+    # Flow A (copywriter skip_image) → publish; Flow B (image_prompt) → copywriter?
     builder.add_conditional_edges(
         "seo_generator",
-        should_approve,
+        _seo_generator_router,
         {
             "publisher": "publisher",
             "human_feedback": END,
+            "copywriter": "copywriter",
+            "end": END,
         },
     )
 
     builder.add_edge("publisher", END)
-    builder.add_edge("image_prompt_generator", END)
 
     # ── Compile with checkpointer + HITL interrupt ──
     checkpointer = await _get_checkpoint_saver()

@@ -65,6 +65,7 @@ export const threadMessageSchema = z.object({
   pending_approval: z.boolean().optional(),
   usage: tokenUsageSchema.nullish(),
   rag_trace: z.array(ragTraceEventSchema).nullish(),
+  image_url: z.string().nullish(),
   seo_metadata: seoMetadataSchema.nullish()
 })
 

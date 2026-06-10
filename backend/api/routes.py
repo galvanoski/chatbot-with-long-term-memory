@@ -25,6 +25,7 @@ from backend.api.schemas import (
     BrandRuleSaveResponse,
     DeleteThreadResponse,
     DeleteMemoryResponse,
+    ImageGenerationRequest,
     ImagePromptRequest,
     SEORequest,
     MemoryItem,
@@ -543,6 +544,8 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
 
         payload = _build_thread_payload(existing_thread, snap_values)
 
+        image_url = snap_values.get("image_url") or ""
+
         # Attach aggregate token usage and RAG trace to the last assistant message
         usage_dict = usage_tracker.to_dict() if usage_tracker._calls else None
         # Merge middleware events (context var, before/after graph) with state-based events (inside graph nodes)
@@ -564,6 +567,8 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                     msg["usage"] = usage_dict
                 if rag_trace_data:
                     msg["rag_trace"] = rag_trace_data
+                if image_url:
+                    msg["image_url"] = image_url
                 seo = {
                     k: snap_values.get(k)
                     for k in ("seo_title", "seo_keywords", "seo_description", "meta_description", "url_slug", "alt_text")
@@ -572,6 +577,9 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                 if seo:
                     msg["seo_metadata"] = seo
                 break
+
+        if image_url:
+            yield _encode_sse("image_url", {"url": image_url, "message_id": ""})
 
         now = _utc_now_iso()
         cached_thread = _thread_cache_update(thread_id, {
@@ -614,6 +622,95 @@ def _format_recent_conversation(messages: list[dict], max_pairs: int = 3) -> str
     # Keep only the last max_pairs * 2 messages (pairs)
     pairs = pairs[-(max_pairs * 2):]
     return "\n\n".join(pairs) if pairs else ""
+
+
+# ── Image generation (standalone, called after post or image prompt) ──
+
+
+async def _sse_generate_image(thread_id: str, body: ImageGenerationRequest):
+    try:
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": body.user_id,
+            }
+        }
+        clean_state = _middleware.before_agent(
+            {
+                "messages": [HumanMessage(content=body.prompt or "Generate an image")],
+                "user_id": body.user_id,
+                "thread_id": thread_id,
+                "_current_node": "image_generator",
+                "image_generation_requested": True,
+            },
+            config,
+        )
+
+        yield _encode_sse("start", {"status": "active", "image_generation": True})
+
+        thread_dict = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {}
+        msg_list = thread_dict.get("messages", [])
+
+        # Use the user prompt or fall back to the last assistant text
+        source_text = body.prompt
+        if not source_text:
+            for msg in reversed(msg_list):
+                if msg.get("role") != "assistant":
+                    continue
+                text = str(msg.get("content") or "").strip()
+                if text and not text.startswith("🖼") and not text.startswith("🔎"):
+                    source_text = text[:1000]
+                    break
+        if not source_text:
+            source_text = "a cat programmer logo"
+
+        # Call Riverflow V2.5 Pro directly — no GPT-5-mini refinement
+        logger.info("_sse_generate_image: calling Riverflow with '%s'", source_text[:80])
+        from backend.graph.nodes.image_generator import _call_openrouter_image
+        image_url = _call_openrouter_image(source_text)
+        logger.info("_sse_generate_image: result image_url=%s", image_url[:60] if image_url else "None")
+
+        # Save to thread
+        thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id, "user_id": body.user_id, "title": None,
+            "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(),
+            "status": "active", "messages": [],
+        }
+        thread = _thread_cache_set(thread)
+        now = _utc_now_iso()
+
+        if body.prompt:
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.prompt, "created_at": now}
+            thread["messages"] = list(thread.get("messages", [])) + [user_msg]
+
+        msg_id = str(uuid.uuid4())
+        assistant_msg: dict[str, Any] = {
+            "id": msg_id, "role": "assistant",
+            "content": "",
+            "created_at": now,
+        }
+        if image_url:
+            assistant_msg["image_url"] = image_url
+
+        thread["messages"] = list(thread.get("messages", [])) + [assistant_msg]
+        cached_thread = _thread_cache_update(thread_id, {
+            "messages": thread["messages"],
+            "updated_at": now,
+        })
+        _save_thread_record(cached_thread)
+
+        yield _encode_sse("image_url", {"url": image_url or "", "message_id": msg_id})
+        yield _encode_sse("done", {
+            "title": cached_thread.get("title"),
+            "status": "active",
+            "messages": cached_thread.get("messages", []),
+        })
+
+    except HTTPException as exc:
+        yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+    except Exception as exc:
+        logger.exception("generate image failed")
+        yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
 IMAGE_PROMPT_SYSTEM_PROMPT = (
@@ -1002,6 +1099,7 @@ def _extract_messages(state_values: dict) -> list[dict]:
     """Convert LangGraph AnyMessage list to frontend Message dicts.
 
     Filters out internal messages: tool results and regeneration prompts.
+    Also attaches top-level state fields (image_url) to the last assistant message.
     """
     msgs = []
 
@@ -1040,6 +1138,15 @@ def _extract_messages(state_values: dict) -> list[dict]:
             "content": content,
             "created_at": _utc_now_iso(),
         })
+
+    # Attach top-level image_url to the last assistant message
+    image_url = state_values.get("image_url") or ""
+    if image_url:
+        for msg in reversed(msgs):
+            if msg.get("role") == "assistant":
+                msg["image_url"] = image_url
+                break
+
     return msgs
 
 
@@ -1537,6 +1644,15 @@ def generate_image_prompt_stream(thread_id: str, body: ImagePromptRequest):
 def generate_seo_stream(thread_id: str, body: SEORequest):
     return StreamingResponse(
         _sse_generate_seo(thread_id, body),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/chat/threads/{thread_id}/image/stream")
+def generate_image_stream(thread_id: str, body: ImageGenerationRequest):
+    return StreamingResponse(
+        _sse_generate_image(thread_id, body),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

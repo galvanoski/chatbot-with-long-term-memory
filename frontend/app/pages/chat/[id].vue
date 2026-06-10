@@ -141,8 +141,8 @@ const loadingStatusText = computed(() => {
 const displayedMessages = computed(() => {
   return threadMessages.value.filter((message) => {
     if (message?.role !== 'assistant') return true
-    // Keep the active streaming placeholder inline where the next assistant response will appear.
-    return hasMessageText(message) || isStreamingPlaceholder(message)
+    // Keep messages that have text, image, or are streaming placeholders
+    return hasMessageText(message) || isStreamingPlaceholder(message) || !!message.image_url
   }).map((message, index) => ({
     ...message,
     _renderKey: `${message?.id || 'msg'}-${message?.role || 'unknown'}-${index}`
@@ -323,7 +323,13 @@ const debugState = computed(() => JSON.stringify({
                   </div>
                 </div>
               </template>
-              <p v-else class="chat-assistant-text">{{ messageText(msg) }}</p>
+              <p v-if="!msg.seo_metadata && messageText(msg)" class="chat-assistant-text">{{ messageText(msg) }}</p>
+              <img
+                v-if="msg.image_url"
+                :src="msg.image_url"
+                alt="Generated image"
+                class="mt-3 rounded-lg max-w-full h-auto border border-default/20"
+              />
 
               <div
                 v-if="hasMessageText(msg) && !isTemporaryMessage(msg)"
@@ -370,6 +376,17 @@ const debugState = computed(() => JSON.stringify({
                     aria-label="Neu generieren"
                   >
                     <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
+                  </button>
+                </UTooltip>
+                <UTooltip text="Bild generieren">
+                  <button
+                    type="button"
+                    class="chat-action-btn"
+                    :disabled="loading || sending"
+                    @click="chat.generateImage(messageText(msg), msg.id)"
+                    aria-label="Bild generieren"
+                  >
+                    <UIcon name="i-lucide-image" class="size-4" />
                   </button>
                 </UTooltip>
 
