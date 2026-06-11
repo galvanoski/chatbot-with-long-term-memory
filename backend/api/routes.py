@@ -890,7 +890,14 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
             yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
             return
 
+        feedback = (clean_state.get("human_feedback_image_prompt_generator") or "").strip()
         system_content = IMAGE_PROMPT_SYSTEM_PROMPT
+        if feedback:
+            system_content += (
+                "\n\nIMPORTANT USER FEEDBACK (previous image prompt was rejected):\n"
+                f'"{feedback}"\n'
+                "Use this feedback to improve the new prompt.\n"
+            )
         if recent_context:
             system_content += (
                 "\n\nRecent conversation context (use this to resolve references "
@@ -1108,7 +1115,14 @@ async def _sse_generate_seo(thread_id: str, body: SEORequest):
             yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
             return
 
+        feedback = (clean_state.get("human_feedback_seo_generator") or "").strip()
         system_content = SEO_SYSTEM_PROMPT
+        if feedback:
+            system_content += (
+                "\n\nIMPORTANT USER FEEDBACK (previous SEO metadata was rejected):\n"
+                f'"{feedback}"\n'
+                "Use this feedback to improve the new SEO metadata.\n"
+            )
         if recent_context:
             system_content += (
                 "\n\nRecent conversation context:\n" + recent_context
@@ -1567,6 +1581,31 @@ def _is_creation_request(text: str) -> bool:
     return bool(_CREATION_KEYWORDS.search(text))
 
 
+_EVALUATION_TARGET_PREFIXES: dict[str, str] = {
+    "🎨": "image_prompt_generator",
+    "🔎": "seo_generator",
+    "**Image Prompt**": "image_prompt_generator",
+    "🖼": "image_generator",
+}
+
+
+def _determine_evaluation_target_node(messages: list[dict]) -> str:
+    """Determine which graph node generated the last assistant message."""
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        if msg.get("is_image_prompt"):
+            return "image_prompt_generator"
+        if msg.get("image_url"):
+            return "image_generator"
+        content = str(msg.get("content") or "").strip()
+        for prefix, node in _EVALUATION_TARGET_PREFIXES.items():
+            if content.startswith(prefix):
+                return node
+        return "copywriter"
+    return "copywriter"
+
+
 def _has_product_context(thread_dict: dict | None, instruction: str = "") -> bool:
     """Check if the thread has product context (image prompt, image, or URL content)
     needed to generate SEO or social media posts."""
@@ -1764,7 +1803,14 @@ async def _sse_generate_social_post(thread_id: str, body: SocialPostRequest):
             yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
             return
 
+        feedback = (clean_state.get("human_feedback_copywriter") or "").strip()
         system_content = SOCIAL_POST_SYSTEM_PROMPT
+        if feedback:
+            system_content += (
+                "\n\nIMPORTANT USER FEEDBACK (previous social post was rejected):\n"
+                f'"{feedback}"\n'
+                "Use this feedback to improve the new post.\n"
+            )
         system_content += f"\n\nProduct type: {body.product_type}"
         if recent_context:
             system_content += "\n\nRecent conversation context:\n" + recent_context
@@ -2566,11 +2612,13 @@ async def approve_copy(thread_id: str, body: ApprovalRequest):
         except Exception:
             logger.warning("approve: failed to clear prior evaluations", exc_info=True)
 
+        target_node = _determine_evaluation_target_node(messages)
         text_to_save = copy_text or "thumbs_up"
         _memory.ltm.save(body.user_id, f"Positive Bewertung: {text_to_save}", {
             "type": "user_evaluation",
             "thread_id": thread_id,
             "rating": "up",
+            "target_node": target_node,
         })
 
         _memory.save_analytics(body.user_id, "human_feedback", {
@@ -2633,10 +2681,12 @@ async def reject_copy(thread_id: str, body: ApprovalRequest):
                 if last_assistant:
                     copy_text = last_assistant[-1].get("content", "").strip()
 
+        target_node = _determine_evaluation_target_node(messages)
         _memory.ltm.save(body.user_id, f"Negative Bewertung: {copy_text or 'thumbs_down'}", {
             "type": "user_evaluation",
             "thread_id": thread_id,
             "rating": "down",
+            "target_node": target_node,
         })
 
         _memory.save_analytics(body.user_id, "human_feedback", {

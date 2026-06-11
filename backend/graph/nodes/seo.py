@@ -67,6 +67,15 @@ def seo_node(state: AgentState) -> dict:
 
     user_prompt = "Generate Rank Math-optimized SEO metadata for the following product:\n\n" + "\n\n".join(context_parts)
 
+    feedback = (state.get("human_feedback_seo_generator") or "").strip()
+    system_content = SEO_SYSTEM_PROMPT
+    if feedback:
+        system_content += (
+            "\n\nIMPORTANT USER FEEDBACK (previous SEO metadata was rejected):\n"
+            f'"{feedback}"\n'
+            "Use this feedback to improve the new SEO metadata.\n"
+        )
+
     llm = ChatOpenAI(
         model="openai/gpt-5-mini",
         base_url="https://openrouter.ai/api/v1",
@@ -75,7 +84,7 @@ def seo_node(state: AgentState) -> dict:
 
     llm_start = time.time()
     response = llm.invoke([
-        SystemMessage(content=SEO_SYSTEM_PROMPT),
+        SystemMessage(content=system_content),
         HumanMessage(content=user_prompt),
     ])
     llm_latency = (time.time() - llm_start) * 1000

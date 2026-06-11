@@ -217,7 +217,7 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
     Integrates middleware hooks 2 (before_model), 3 (wrap_model_call),
     and 5 (after_model) when middleware is provided.
     """
-    human_feedback = (state.get("human_feedback", "") or "").strip()
+    human_feedback = (state.get("human_feedback_copywriter") or state.get("human_feedback", "") or "").strip()
 
     if state["messages"]:
         user_message = state["messages"][-1].content
@@ -240,7 +240,7 @@ def copywriter_node(state: AgentState, mw: AgentMiddleware | None = None) -> dic
     product_context_text = "\n\n".join(product_context[:3]) if product_context else "(no product context found)"
     trend = state.get("trend_insights", "")
     memes = state.get("meme_references", [])
-    human_feedback = (state.get("human_feedback", "") or "").strip()
+    human_feedback = (state.get("human_feedback_copywriter") or state.get("human_feedback", "") or "").strip()
     feedback_section = ""
     if human_feedback:
         feedback_section = (

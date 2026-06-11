@@ -25,7 +25,11 @@ class AgentState(TypedDict):
 
     # ── HITL (Human-in-the-Loop) ──
     approval_status: Optional[str]    # None | "pending" | "approved" | "rejected"
-    human_feedback: Optional[str]
+    human_feedback: Optional[str]     # Legacy, kept for backward compat
+    human_feedback_copywriter: Optional[str]
+    human_feedback_image_prompt_generator: Optional[str]
+    human_feedback_image_generator: Optional[str]
+    human_feedback_seo_generator: Optional[str]
 
     # ── Publisher node output ──
     publication_result: Optional[dict]

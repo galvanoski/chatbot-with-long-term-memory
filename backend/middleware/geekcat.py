@@ -73,26 +73,31 @@ class GeekCatMiddleware(AgentMiddleware):
         ltm_texts = [m["text"][:200] for m in ltm_context]
         add_rag_trace("ltm_retrieve", docs=len(ltm_context), latency_ms=round(ltm_latency, 1), texts=ltm_texts)
 
-        # Retrieve past user evaluations so the copywriter can learn from feedback
-        # Only inject if not already set (e.g. from regeneration instruction)
-        existing_human_feedback = (state.get("human_feedback") or "").strip()
-        if not existing_human_feedback:
-            try:
-                coll = self.memory.ltm.vector_store.get_user_collection(user_id)
-                eval_results = coll.get(where={"type": "user_evaluation"})
-                if eval_results and eval_results.get("ids"):
-                    evals = []
-                    for i, doc_id in enumerate(eval_results["ids"]):
-                        meta = (eval_results.get("metadatas") or [{}])[i] or {}
-                        text = (eval_results.get("documents") or [""])[i] or ""
-                        rating = meta.get("rating", "unknown")
-                        evals.append(f"(User {rating}-voted) {text[:300]}")
+        # Retrieve past user evaluations, filtered by target_node per node
+        try:
+            coll = self.memory.ltm.vector_store.get_user_collection(user_id)
+            eval_results = coll.get(where={"type": "user_evaluation"})
+            if eval_results and eval_results.get("ids"):
+                per_node: dict[str, list[str]] = {}
+                for i, doc_id in enumerate(eval_results["ids"]):
+                    meta = (eval_results.get("metadatas") or [{}])[i] or {}
+                    text = (eval_results.get("documents") or [""])[i] or ""
+                    rating = meta.get("rating", "unknown")
+                    target = meta.get("target_node", "copywriter")
+                    if target not in per_node:
+                        per_node[target] = []
+                    per_node[target].append(f"(User {rating}-voted) {text[:300]}")
+                for node_name, evals in per_node.items():
                     if evals:
                         feedback_text = "Past user evaluations:\n" + "\n".join(f"- {e}" for e in evals[-3:])
-                        state["human_feedback"] = feedback_text
-                        logger.info("before_agent: injected %d evaluations as human_feedback", len(evals))
-            except Exception as exc:
-                logger.debug("before_agent: failed to fetch evaluations: %s", exc)
+                        state[f"human_feedback_{node_name}"] = feedback_text
+                        logger.info("before_agent: injected %d evaluations into human_feedback_%s", len(evals), node_name)
+                # Legacy fallback: copywriter feedback into human_feedback
+                if "copywriter" in per_node and not state.get("human_feedback"):
+                    evals = per_node["copywriter"]
+                    state["human_feedback"] = "Past user evaluations:\n" + "\n".join(f"- {e}" for e in evals[-3:])
+        except Exception as exc:
+            logger.debug("before_agent: failed to fetch evaluations: %s", exc)
 
         # Init analytics
         _request_start_time.set(time.time())

@@ -35,8 +35,17 @@ def image_prompt_node(state: AgentState, mw=None) -> dict:
         api_key=os.environ["OPENROUTER_API_KEY"],
     )
 
+    feedback = (state.get("human_feedback_image_prompt_generator") or "").strip()
+    system_content = IMAGE_PROMPT_SYSTEM_PROMPT
+    if feedback:
+        system_content += (
+            "\n\nIMPORTANT USER FEEDBACK (previous image prompt was rejected):\n"
+            f'"{feedback}"\n'
+            "Use this feedback to improve the new prompt.\n"
+        )
+
     messages = [
-        SystemMessage(content=IMAGE_PROMPT_SYSTEM_PROMPT),
+        SystemMessage(content=system_content),
         HumanMessage(content=instruction),
     ]
 

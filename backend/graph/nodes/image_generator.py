@@ -124,7 +124,7 @@ def _try_image_model(model: str, modalities: list[str], prompt: str, timeout: in
     return None
 
 
-def _generate_image_prompt(source_text: str) -> str:
+def _generate_image_prompt(source_text: str, feedback: str = "") -> str:
     """Silently generate an image prompt from a draft post using GPT-5-mini."""
     try:
         llm = ChatOpenAI(
@@ -132,8 +132,15 @@ def _generate_image_prompt(source_text: str) -> str:
             base_url="https://openrouter.ai/api/v1",
             api_key=os.environ["OPENROUTER_API_KEY"],
         )
+        system_content = IMAGE_PROMPT_GENERATOR_PROMPT
+        if feedback:
+            system_content += (
+                "\n\nIMPORTANT USER FEEDBACK (previous image was rejected):\n"
+                f'"{feedback}"\n'
+                "Use this feedback to improve the new image prompt.\n"
+            )
         messages = [
-            SystemMessage(content=IMAGE_PROMPT_GENERATOR_PROMPT),
+            SystemMessage(content=system_content),
             HumanMessage(content=f"Generate an image prompt for this post:\n\n{source_text}"),
         ]
         response = llm.invoke(messages)
@@ -152,6 +159,7 @@ def image_generator_node(state: AgentState, mw=None) -> dict:
     """
     draft = state.get("draft_copy_de", "").strip()
     existing_prompt = state.get("image_prompt_result", "").strip()
+    feedback = (state.get("human_feedback_image_generator") or "").strip()
 
     _rag_trace: list[dict] = []
 
@@ -161,7 +169,7 @@ def image_generator_node(state: AgentState, mw=None) -> dict:
     elif draft:
         logger.info("image_generator_node: generating image prompt from draft")
         llm_start = time.time()
-        source_text = _generate_image_prompt(draft)
+        source_text = _generate_image_prompt(draft, feedback=feedback)
         llm_latency = (time.time() - llm_start) * 1000
         _rag_trace.append({
             "stage": "prompt_generation",
