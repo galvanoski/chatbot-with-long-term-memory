@@ -15,6 +15,9 @@ IMAGE_PROMPT_SYSTEM_PROMPT = (
     "Generate a detailed image generation prompt suitable for Midjourney / DALL-E / Stable Diffusion. "
     "The prompt must be in English, describe a logo or illustration style, include visual details "
     "(colors, composition, style), and fit on merchandise (t-shirts, mugs, stickers). "
+    "IMPORTANT: Never include generic placeholder text like 'Brand Name', 'Your Brand', 'Brand', 'Logo', "
+    "'Company Name', or similar generic text in the image. If text must appear, use a specific phrase "
+    "inspired by the product theme (e.g. a tech/cat pun in German or English). "
     "Output ONLY the prompt text, no explanations, no markdown."
 )
 

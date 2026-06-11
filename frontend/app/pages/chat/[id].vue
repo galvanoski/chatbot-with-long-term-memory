@@ -107,6 +107,40 @@ async function sendFeedback(msg: any, rating: 'up' | 'down') {
   }
 }
 
+function runSuggestion(action: string, msg: any) {
+  const text = messageText(msg) || ''
+
+  // Handle product-type-specific create_post actions: create_post_tshirt, create_post_mug, etc.
+  const createPostMatch = action.match(/^create_post_(.+)$/)
+  if (createPostMatch) {
+    const productType = createPostMatch[1]
+    chat.generateSocialPost(text, productType)
+    return
+  }
+
+  switch (action) {
+    case 'generate_image':
+      chat.generateImage(text, msg.id)
+      break
+    case 'generate_image_prompt':
+      chat.generateImagePrompt(text || 'a cat programmer logo', true)
+      break
+    case 'generate_seo':
+      chat.generateSEO(text || '')
+      break
+    case 'create_post':
+      chat.generateSocialPost(text || 'Create a social media post for this product')
+      break
+    case 'research_trends':
+      input.value = text ? `Research trends for: ${text}` : 'Research current trends'
+      send()
+      break
+    case 'copy_clipboard':
+      copyDraftToClipboard(text)
+      break
+  }
+}
+
 const input = ref('')
 const isLoading = computed(() => unref(chat.loading))
 const isSending = computed(() => unref(chat.sending))
@@ -592,39 +626,23 @@ const debugState = computed(() => JSON.stringify({
                   </details>
                 </div>
 
-                <!-- Image prompt suggestion cards -->
+                <!-- Suggestion cards -->
                 <div
-                  v-if="msg.is_image_prompt && !isTemporaryMessage(msg)"
+                  v-if="msg.suggestions && msg.suggestions.length && !isTemporaryMessage(msg)"
                   class="w-full mt-4 space-y-2"
                 >
-                  <p class="text-xs font-semibold text-muted/60 uppercase tracking-wide">What would you like to do?</p>
+                  <p class="text-xs font-semibold text-muted/60 uppercase tracking-wide">Next steps</p>
                   <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <button
+                      v-for="(s, si) in msg.suggestions"
+                      :key="si"
                       type="button"
                       class="prompt-suggestion-card"
-                      @click="chat.generateImage(messageText(msg), msg.id)"
+                      @click="runSuggestion(s.action, msg)"
                     >
-                      <UIcon name="i-lucide-image" class="size-5 text-primary" />
-                      <span class="text-sm font-medium">Generate Image</span>
-                      <span class="text-xs text-muted/70">Create the actual image from this prompt</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="prompt-suggestion-card"
-                      @click="copyDraftToClipboard(messageText(msg))"
-                    >
-                      <UIcon name="i-lucide-copy" class="size-5 text-primary" />
-                      <span class="text-sm font-medium">Copy Prompt</span>
-                      <span class="text-xs text-muted/70">Copy the prompt text to clipboard</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="prompt-suggestion-card"
-                      @click="chat.generateImagePrompt(messageText(msg), true)"
-                    >
-                      <UIcon name="i-lucide-refresh-cw" class="size-5 text-primary" />
-                      <span class="text-sm font-medium">Try Another</span>
-                      <span class="text-xs text-muted/70">Generate a different prompt for the same idea</span>
+                      <UIcon :name="s.icon || 'i-lucide-arrow-right'" class="size-5 text-primary" />
+                      <span class="text-sm font-medium">{{ s.label }}</span>
+                      <span class="text-xs text-muted/70">{{ s.description }}</span>
                     </button>
                   </div>
                 </div>

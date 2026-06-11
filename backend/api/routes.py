@@ -28,6 +28,7 @@ from backend.api.schemas import (
     ImageGenerationRequest,
     ImagePromptRequest,
     SEORequest,
+    SocialPostRequest,
     MemoryItem,
     MemoryListResponse,
     MessageSendRequest,
@@ -174,7 +175,14 @@ def _thread_cache_set(thread: dict) -> dict:
 
 def _thread_cache_update(thread_id: str, updates: dict) -> dict:
     with _threads_lock:
-        thread = dict(_threads.get(thread_id, {"id": thread_id}))
+        thread = dict(_threads.get(thread_id, {}))
+        if not thread:
+            # Fall back to DB to preserve user_id and other fields
+            db_thread = _load_thread_record(thread_id)
+            if db_thread:
+                thread = db_thread
+            else:
+                thread = {"id": thread_id}
         thread.update(updates)
         _threads[thread_id] = thread
         return thread
@@ -592,6 +600,9 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
                 }
                 if seo:
                     msg["seo_metadata"] = seo
+                suggestions = _compute_suggestions(snap_values)
+                if suggestions:
+                    msg["suggestions"] = suggestions
                 break
 
         if image_url:
@@ -718,6 +729,10 @@ async def _sse_generate_image(thread_id: str, body: ImageGenerationRequest):
             assistant_msg["image_url"] = image_url
         if usage_info:
             assistant_msg["usage"] = usage_info
+        assistant_msg["suggestions"] = [
+            {"action": "generate_seo", "label": "SEO Metadata", "icon": "i-lucide-search", "description": "Generate SEO title, keywords and description"},
+            {"action": "create_post", "label": "Create Social Media Post", "icon": "i-lucide-megaphone", "description": "Create a marketing post for this design"},
+        ]
 
         thread["messages"] = list(thread.get("messages", [])) + [assistant_msg]
         cached_thread = _thread_cache_update(thread_id, {
@@ -746,6 +761,9 @@ IMAGE_PROMPT_SYSTEM_PROMPT = (
     "Generate a detailed image generation prompt suitable for Midjourney / DALL-E / Stable Diffusion. "
     "The prompt must be in English, describe a logo or illustration style, include visual details "
     "(colors, composition, style), and fit on merchandise (t-shirts, mugs, stickers). "
+    "IMPORTANT: Never include generic placeholder text like 'Brand Name', 'Your Brand', 'Brand', 'Logo', "
+    "'Company Name', or similar generic text in the image. If text must appear, use a specific phrase "
+    "inspired by the product theme (e.g. a tech/cat pun in German or English). "
     "Output ONLY the prompt text, no explanations, no markdown."
 )
 
@@ -894,6 +912,11 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         rag_trace_data = get_rag_trace()
         if rag_trace_data:
             assistant_msg["rag_trace"] = rag_trace_data
+        assistant_msg["suggestions"] = [
+            {"action": "generate_image", "label": "Generate Image", "icon": "i-lucide-image", "description": "Create the actual product image from this prompt"},
+            {"action": "generate_seo", "label": "SEO Metadata", "icon": "i-lucide-search", "description": "Generate SEO title, keywords and description"},
+            {"action": "create_post", "label": "Create Social Media Post", "icon": "i-lucide-megaphone", "description": "Create a marketing post for this product"},
+        ]
         new_messages = list(thread.get("messages", []))
         if user_msg:
             new_messages.append(user_msg)
@@ -1117,6 +1140,11 @@ async def _sse_generate_seo(thread_id: str, body: SEORequest):
         rag_trace_data = get_rag_trace()
         if rag_trace_data:
             assistant_msg["rag_trace"] = rag_trace_data
+        assistant_msg["suggestions"] = [
+            {"action": "generate_image_prompt", "label": "Create Image Prompt", "icon": "i-lucide-wand", "description": "Generate a product image prompt"},
+            {"action": "generate_seo", "label": "Regenerate SEO", "icon": "i-lucide-search", "description": "Generate new SEO metadata"},
+            {"action": "create_post", "label": "Create Social Media Post", "icon": "i-lucide-megaphone", "description": "Create a marketing post for SEO-optimized product"},
+        ]
         thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
 
         cached_thread = _thread_cache_update(thread_id, {
@@ -1203,6 +1231,295 @@ def _extract_messages(state_values: dict) -> list[dict]:
                 break
 
     return msgs
+
+
+def _compute_suggestions(state: dict) -> list[dict]:
+    """Compute contextual next-step suggestions based on graph/thread state."""
+    suggestions = []
+
+    draft = (state.get("draft_copy_de") or "").strip()
+    image_prompt = (state.get("image_prompt_result") or "").strip()
+    image_url = (state.get("image_url") or "").strip()
+    seo_title = (state.get("seo_title") or "").strip()
+    product_skus = state.get("product_skus", [])
+
+    has_draft = bool(draft)
+    has_image_prompt = bool(image_prompt)
+    has_image = bool(image_url)
+    has_seo = bool(seo_title)
+    has_product = bool(product_skus)
+
+    # After copywriter generates draft
+    if has_draft:
+        if not has_image_prompt:
+            suggestions.append({
+                "action": "generate_image_prompt",
+                "label": "Create Image Prompt",
+                "icon": "i-lucide-wand",
+                "description": "Generate a product image prompt from this copy",
+            })
+        if not has_seo:
+            suggestions.append({
+                "action": "generate_seo",
+                "label": "SEO Metadata",
+                "icon": "i-lucide-search",
+                "description": "Generate SEO title, keywords and description",
+            })
+        suggestions.append({
+            "action": "research_trends",
+            "label": "Research Trends",
+            "icon": "i-lucide-trending-up",
+            "description": "Find trending topics for this product",
+        })
+
+    # After image prompt is available (no draft or no image yet)
+    if has_image_prompt and not has_image:
+        suggestions.append({
+            "action": "generate_image",
+            "label": "Generate Image",
+            "icon": "i-lucide-image",
+            "description": "Create the actual product image",
+        })
+        if not has_seo:
+            suggestions.append({
+                "action": "generate_seo",
+                "label": "SEO Metadata",
+                "icon": "i-lucide-search",
+                "description": "Generate SEO title, keywords and description",
+            })
+        if not has_draft:
+            suggestions.append({
+                "action": "create_post",
+                "label": "Create Social Media Post",
+                "icon": "i-lucide-megaphone",
+                "description": "Create a marketing post for this design",
+            })
+
+    # After image is generated
+    if has_image:
+        if not has_seo:
+            suggestions.append({
+                "action": "generate_seo",
+                "label": "SEO Metadata",
+                "icon": "i-lucide-search",
+                "description": "Optimize for search engines",
+            })
+        if not has_draft:
+            suggestions.append({
+                "action": "create_post",
+                "label": "Create Social Media Post",
+                "icon": "i-lucide-megaphone",
+                "description": "Create a marketing post about this design",
+            })
+
+    # After SEO is generated (and no draft/prompt/image flow yet)
+    if has_seo and not has_draft and not has_image_prompt:
+        suggestions.append({
+            "action": "generate_image_prompt",
+            "label": "Create Image Prompt",
+            "icon": "i-lucide-wand",
+            "description": "Create a product image prompt",
+        })
+        suggestions.append({
+            "action": "create_post",
+            "label": "Create Social Media Post",
+            "icon": "i-lucide-megaphone",
+            "description": "Create a marketing post for SEO-optimized product",
+        })
+
+    # Product research available
+    if has_product and not has_draft:
+        suggestions.append({
+            "action": "create_post",
+            "label": "Create Social Media Post",
+            "icon": "i-lucide-megaphone",
+            "description": "Create a marketing post for these products",
+        })
+
+    return suggestions
+
+
+SOCIAL_POST_SYSTEM_PROMPT = (
+    "You are a social media marketing specialist for 'The Geek Cat' brand \u2014 "
+    "a German print-on-demand store selling sarcastic IT/cat-themed merchandise. "
+    "Create an engaging social media post for the given product. "
+    "The post should be in German, include a hook, body, call-to-action, and relevant hashtags. "
+    "Keep it concise and suitable for Instagram, Facebook, and TikTok. "
+    "Output ONLY the post text, no explanations, no markdown formatting."
+)
+
+
+async def _sse_generate_social_post(thread_id: str, body: SocialPostRequest):
+    try:
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": body.user_id,
+            }
+        }
+
+        clean_state = _middleware.before_agent(
+            {
+                "messages": [HumanMessage(content=body.instruction)],
+                "user_id": body.user_id,
+                "thread_id": thread_id,
+                "_current_node": "social_post_generator",
+            },
+            config,
+        )
+
+        yield _encode_sse("start", {"status": "active"})
+
+        thread_dict = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
+        if not thread_dict:
+            thread_dict = _load_thread_record(thread_id) or {}
+        msg_list = thread_dict.get("messages", [])
+        recent_context = _format_recent_conversation(msg_list)
+
+        if not body.product_type:
+            # No product type selected -- ask user with suggestion cards
+            now = _utc_now_iso()
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+            assistant_msg = {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": "F\u00fcr welchen Produkttyp m\u00f6chtest du den Social-Media-Beitrag erstellen?",
+                "created_at": now,
+                "suggestions": [
+                    {"action": "create_post_tshirt", "label": "T-Shirt", "icon": "i-lucide-shirt", "description": "Social-Media-Beitrag f\u00fcr ein T-Shirt"},
+                    {"action": "create_post_mug", "label": "Tasse", "icon": "i-lucide-coffee", "description": "Social-Media-Beitrag f\u00fcr eine Tasse"},
+                    {"action": "create_post_sticker", "label": "Sticker", "icon": "i-lucide-tag", "description": "Social-Media-Beitrag f\u00fcr einen Sticker"},
+                    {"action": "create_post_hoodie", "label": "Hoodie", "icon": "i-lucide-shirt", "description": "Social-Media-Beitrag f\u00fcr einen Hoodie"},
+                ],
+            }
+
+            thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+                "id": thread_id, "user_id": body.user_id, "title": None,
+                "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(),
+                "status": "active", "messages": [],
+            }
+            thread = _thread_cache_set(thread)
+            thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+
+            yield _encode_sse("done", {
+                "title": cached_thread.get("title"),
+                "status": "active",
+                "messages": cached_thread.get("messages", []),
+            })
+            return
+
+        # Product type selected -- generate social post
+        llm = ChatOpenAI(
+            model="openai/gpt-5-mini",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ["OPENROUTER_API_KEY"],
+        )
+
+        # Find last assistant text for context
+        last_assistant_text = ""
+        for msg in reversed(msg_list):
+            if msg.get("role") != "assistant":
+                continue
+            text = _coerce_plain_assistant_content(str(msg.get("content") or "")).strip()
+            if not text or text.startswith("\U0001f3a8") or text.startswith("\U0001f50e"):
+                continue
+            last_assistant_text = text
+            break
+
+        instruction = body.instruction
+        if last_assistant_text:
+            instruction = re.sub(
+                r"\bthe generated post\b",
+                last_assistant_text[:400],
+                instruction,
+                flags=re.IGNORECASE,
+            )
+
+        system_content = SOCIAL_POST_SYSTEM_PROMPT
+        system_content += f"\n\nProduct type: {body.product_type}"
+        if recent_context:
+            system_content += "\n\nRecent conversation context:\n" + recent_context
+        if last_assistant_text:
+            system_content += f"\n\nReference content:\n{last_assistant_text[:500]}"
+
+        messages: list = [
+            SystemMessage(content=system_content),
+            HumanMessage(content=instruction),
+        ]
+
+        messages = _middleware.before_model(messages, clean_state)
+
+        result_parts: list[str] = []
+        stream_chunks: list[Any] = []
+        async for chunk in llm.astream(messages):
+            stream_chunks.append(chunk)
+            content = chunk.content if hasattr(chunk, "content") else ""
+            if isinstance(content, str) and content:
+                result_parts.append(content)
+                yield _encode_sse("delta", {"text": content})
+
+        raw_result = "".join(result_parts).strip()
+
+        # Extract usage from stream chunks
+        usage_dict = None
+        from backend.tracking.usage import extract_usage_from_chunks, UsageInfo
+        chunk_usage = extract_usage_from_chunks(stream_chunks)
+        if chunk_usage:
+            model_name = "openai/gpt-5-mini"
+            u = UsageInfo(model=model_name, input_tokens=chunk_usage.get("input_tokens", 0), output_tokens=chunk_usage.get("output_tokens", 0))
+            usage_dict = u.to_dict()
+        if not usage_dict and stream_chunks:
+            last = stream_chunks[-1]
+            meta = getattr(last, "response_metadata", None) or {}
+            token_usage = meta.get("token_usage") or meta.get("usage")
+            if token_usage and isinstance(token_usage, dict):
+                input_tokens = int(token_usage.get("prompt_tokens", 0) or token_usage.get("input_tokens", 0) or 0)
+                output_tokens = int(token_usage.get("completion_tokens", 0) or token_usage.get("output_tokens", 0) or 0)
+                if input_tokens or output_tokens:
+                    u = UsageInfo(model="openai/gpt-5-mini", input_tokens=input_tokens, output_tokens=output_tokens)
+                    usage_dict = u.to_dict()
+
+        # Apply after_model middleware
+        response = type("Response", (), {"content": raw_result})()
+        response = _middleware.after_model(response, clean_state)
+
+        thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id, "user_id": body.user_id, "title": None,
+            "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(),
+            "status": "active", "messages": [],
+        }
+        thread = _thread_cache_set(thread)
+
+        now = _utc_now_iso()
+        assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": raw_result or f"Could not generate social media post for {body.product_type}.", "created_at": now}
+        if usage_dict:
+            assistant_msg["usage"] = usage_dict
+        rag_trace_data = get_rag_trace()
+        if rag_trace_data:
+            assistant_msg["rag_trace"] = rag_trace_data
+        assistant_msg["suggestions"] = [
+            {"action": "generate_image_prompt", "label": "Create Image Prompt", "icon": "i-lucide-wand", "description": "Generate a product image prompt"},
+            {"action": "generate_seo", "label": "SEO Metadata", "icon": "i-lucide-search", "description": "Generate SEO title, keywords and description"},
+            {"action": "copy_clipboard", "label": "Copy to Clipboard", "icon": "i-lucide-copy", "description": "Copy this post to clipboard"},
+        ]
+
+        thread["messages"] = list(thread.get("messages", [])) + [assistant_msg]
+        cached_thread = _thread_cache_update(thread_id, {"messages": thread["messages"], "updated_at": now})
+        _save_thread_record(cached_thread)
+
+        yield _encode_sse("done", {
+            "title": cached_thread.get("title"),
+            "status": "active",
+            "messages": cached_thread.get("messages", []),
+        })
+
+    except HTTPException as exc:
+        yield _encode_sse("error", {"detail": exc.detail, "status_code": exc.status_code})
+    except Exception as exc:
+        logger.exception("generate social post failed")
+        yield _encode_sse("error", {"detail": str(exc), "status_code": 500})
 
 
 def _message_signature(message: dict) -> tuple[str, str]:
@@ -1652,7 +1969,10 @@ async def get_thread(thread_id: str, user_id: str = ""):
             logger.warning("get_thread graph state failed for %s: %s", thread_id, exc)
     payload = _build_thread_payload(thread)
     payload_title = _derive_thread_title_from_messages(payload.get("messages", []))
-    cached_thread = _thread_cache_update(thread_id, {"title": payload_title})
+    cached_thread = _thread_cache_update(thread_id, {
+        "title": payload_title,
+        "user_id": thread.get("user_id", ""),
+    })
     _save_thread_record(cached_thread)
     payload["title"] = payload_title
     return payload
@@ -1708,6 +2028,15 @@ def generate_seo_stream(thread_id: str, body: SEORequest):
 def generate_image_stream(thread_id: str, body: ImageGenerationRequest):
     return StreamingResponse(
         _sse_generate_image(thread_id, body),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/chat/threads/{thread_id}/social-post/stream")
+def generate_social_post_stream(thread_id: str, body: SocialPostRequest):
+    return StreamingResponse(
+        _sse_generate_social_post(thread_id, body),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -2171,6 +2500,9 @@ async def _sse_regenerate(thread_id: str, body: RegenerateRequest):
                 }
                 if seo:
                     msg["seo_metadata"] = seo
+                suggestions = _compute_suggestions(snap_values)
+                if suggestions:
+                    msg["suggestions"] = suggestions
                 break
 
         now = _utc_now_iso()

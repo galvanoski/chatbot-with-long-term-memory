@@ -69,6 +69,12 @@ export const threadMessageSchema = z.object({
   image_url: z.string().nullish(),
   seo_metadata: seoMetadataSchema.nullish(),
   is_image_prompt: z.boolean().optional(),
+  suggestions: z.array(z.object({
+    action: z.string(),
+    label: z.string(),
+    icon: z.string(),
+    description: z.string(),
+  })).nullish(),
 })
 
 export const threadSourceSchema = z.object({

@@ -44,6 +44,12 @@ class ImageGenerationRequest(BaseModel):
     source_message_id: Optional[str] = None
 
 
+class SocialPostRequest(BaseModel):
+    user_id: str
+    instruction: str = "Create a social media post for my product"
+    product_type: Optional[str] = None
+
+
 class BrandRuleSaveRequest(BaseModel):
     user_id: str
     key: str
@@ -124,6 +130,7 @@ class ThreadMessageResponse(BaseModel):
     seo_metadata: Optional[dict] = None
     is_image_prompt: Optional[bool] = False
     rating: Optional[str] = None
+    suggestions: Optional[list[dict]] = None
 
 
 class ThreadSourceResponse(BaseModel):

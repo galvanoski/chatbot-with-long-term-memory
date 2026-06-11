@@ -657,6 +657,100 @@ export function useGeekCatChat() {
     }
   }
 
+  async function generateSocialPost(instruction: string, productType?: string): Promise<boolean> {
+    if (!currentThread.value || loading.value) return false
+    const previousUiMessages = [...messages.value]
+    cancelMessageAnimation()
+    const controller = new AbortController()
+    animationController.value = controller
+
+    const assistantStreamId = `temp-social-${Date.now()}`
+    const newMessages = [
+      ...previousUiMessages,
+      {
+        id: assistantStreamId,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: '',
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: '' }]
+      }
+    ]
+    if (!productType) {
+      newMessages.splice(previousUiMessages.length, 0, {
+        id: `temp-user-${Date.now()}`,
+        role: 'user' as const,
+        content: instruction,
+        created_at: new Date().toISOString(),
+        name: 'Du',
+        parts: [{ type: 'text' as const, text: instruction }]
+      })
+    }
+    messages.value = newMessages
+
+    loading.value = true
+    error.value = null
+    try {
+      const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/social-post/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction, product_type: productType || null })
+      })
+
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error('Social post endpoint unavailable')
+      }
+
+      await consumeSSEStream(streamResponse.body, async (event, payload) => {
+        if (controller.signal.aborted) return
+
+        if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
+          const deltaText = String((payload as { text?: unknown }).text ?? '')
+          if (!deltaText) return
+          messages.value = messages.value.map((message) => {
+            if (message.id !== assistantStreamId) return message
+            const current = message.parts?.[0]?.text ?? message.content ?? ''
+            const next = `${current}${deltaText}`
+            return { ...message, content: next, parts: [{ type: 'text' as const, text: next }] }
+          })
+          return
+        }
+
+        if (event === 'done' && payload && typeof payload === 'object') {
+          const streamedAssistantText = messages.value.find(m => m.id === assistantStreamId)?.parts?.[0]?.text ?? ''
+          const res = parseValidatedResponse(threadActionResponseSchema, payload, 'Social post response')
+          currentThread.value!.messages = res.messages
+          currentThread.value!.title = res.title ?? currentThread.value!.title
+          currentThread.value!.status = res.status
+          currentThread.value!.updated_at = new Date().toISOString()
+          upsertThreadListItem(currentThread.value!)
+          storeRagTrace(res.rag_trace)
+          const finalUiMessages = preserveStreamedAssistantText(transformMessages(res.messages), streamedAssistantText)
+          messages.value = finalUiMessages
+          return
+        }
+
+        if (event === 'error') {
+          const detail = typeof payload === 'object' && payload && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail ?? 'Social post generation failed')
+            : 'Social post generation failed'
+          throw new Error(detail)
+        }
+      })
+
+      return true
+    } catch (errorValue: unknown) {
+      messages.value = previousUiMessages
+      error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate social post'
+      return false
+    } finally {
+      if (animationController.value === controller) {
+        animationController.value = null
+      }
+      loading.value = false
+    }
+  }
+
   async function generateImage(prompt: string, sourceMessageId?: string): Promise<boolean> {
     if (!currentThread.value || loading.value) return false
     const previousUiMessages = [...messages.value]
@@ -875,6 +969,7 @@ export function useGeekCatChat() {
     cancelMessageAnimation,
     generateImagePrompt,
     generateSEO,
-    generateImage
+    generateImage,
+    generateSocialPost
   }
 }

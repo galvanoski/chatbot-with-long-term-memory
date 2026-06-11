@@ -23,6 +23,12 @@ export interface Message {
     url_slug?: string
     alt_text?: string
   } | null
+  suggestions?: Array<{
+    action: string
+    label: string
+    icon: string
+    description: string
+  }> | null
 }
 
 export interface UIMessage {
@@ -55,6 +61,12 @@ export interface UIMessage {
     url_slug?: string
     alt_text?: string
   } | null
+  suggestions?: Array<{
+    action: string
+    label: string
+    icon: string
+    description: string
+  }> | null
 }
 
 export interface Thread {
