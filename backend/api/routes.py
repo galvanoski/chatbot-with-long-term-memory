@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -491,6 +491,42 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         if url_texts:
             initial_state["product_context"] = url_texts
 
+        # Load thread early so we can validate context
+        thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
+            "id": thread_id, "user_id": body.user_id, "title": None,
+            "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(), "status": "active", "messages": [],
+        }
+        thread = _thread_cache_set(thread)
+
+        # Validate relevance of user message + fetched URL content
+        combined = body.content + "\n" + "\n".join(url_texts)
+        if not _is_geekcat_related(combined):
+            lang = _detect_language(combined)
+            yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
+            yield _encode_sse("delta", {"text": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"])})
+            now = _utc_now_iso()
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.content, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"]), "created_at": now}
+            thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
+
+        # Detect if user is asking to create content (post, SEO, image) without product context
+        if _is_creation_request(body.content) and not _has_product_context(thread, body.content) and not url_texts:
+            lang = _detect_language(body.content)
+            yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
+            yield _encode_sse("delta", {"text": _NO_PRODUCT_CONTEXT_RESPONSE.get(lang, _NO_PRODUCT_CONTEXT_RESPONSE["en"])})
+            now = _utc_now_iso()
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.content, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _NO_PRODUCT_CONTEXT_RESPONSE.get(lang, _NO_PRODUCT_CONTEXT_RESPONSE["en"]), "created_at": now}
+            thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
+
         yield _encode_sse("start", {"status": "active", "title": None, "pending_copy": None})
 
         usage_tracker = UsageTracker()
@@ -838,6 +874,22 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         if url_contexts:
             instruction += "\n\n" + "\n\n---\n\n".join(url_contexts)
 
+        # Validate relevance
+        combined_text = instruction + "\n".join(url_contexts) if url_contexts else instruction
+        if not _is_geekcat_related(combined_text):
+            lang = _detect_language(combined_text)
+            yield _encode_sse("delta", {"text": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"])})
+            now = _utc_now_iso()
+            if not thread_dict.get("id"):
+                thread_dict = {"id": thread_id, "user_id": body.user_id, "title": None, "created_at": now, "updated_at": now, "status": "active", "messages": list(msg_list)}
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"]), "created_at": now}
+            thread_dict["messages"] = list(thread_dict.get("messages", [])) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread_dict["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
+
         system_content = IMAGE_PROMPT_SYSTEM_PROMPT
         if recent_context:
             system_content += (
@@ -977,6 +1029,20 @@ async def _sse_generate_seo(thread_id: str, body: SEORequest):
         if not thread_dict:
             thread_dict = _load_thread_record(thread_id) or {}
         msg_list = thread_dict.get("messages", [])
+
+        # Validate product context exists (image prompt, logo, or product link)
+        if not _has_product_context(thread_dict, body.instruction):
+            lang = _detect_language(body.instruction)
+            yield _encode_sse("delta", {"text": _NO_PRODUCT_CONTEXT_RESPONSE.get(lang, _NO_PRODUCT_CONTEXT_RESPONSE["en"])})
+            now = _utc_now_iso()
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _NO_PRODUCT_CONTEXT_RESPONSE.get(lang, _NO_PRODUCT_CONTEXT_RESPONSE["en"]), "created_at": now}
+            thread_dict["messages"] = list(msg_list) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread_dict["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
+
         recent_context = _format_recent_conversation(msg_list)
 
         # Find last assistant post to use as reference for SEO
@@ -1027,6 +1093,20 @@ async def _sse_generate_seo(thread_id: str, body: SEORequest):
                 url_contexts.append(f"Content from {url}:\n{url_text}")
         if url_contexts:
             user_prompt += "\n\n" + "\n\n---\n\n".join(url_contexts)
+
+        # Validate relevance
+        combined_text = user_prompt + "\n".join(url_contexts) if url_contexts else user_prompt
+        if not _is_geekcat_related(combined_text):
+            lang = _detect_language(combined_text)
+            yield _encode_sse("delta", {"text": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"])})
+            now = _utc_now_iso()
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"]), "created_at": now}
+            thread_dict["messages"] = list(msg_list) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread_dict["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
 
         system_content = SEO_SYSTEM_PROMPT
         if recent_context:
@@ -1339,6 +1419,209 @@ def _compute_suggestions(state: dict) -> list[dict]:
     return suggestions
 
 
+# ── Relevance validation ──
+
+_GEEKCAT_DOMAINS = {"thegeekcat.de", "thegeekcat.com", "geekcat.de"}
+
+_GEEKCAT_KEYWORDS = {
+    # German
+    "geek", "katze", "katzen", "it", "programmierer", "entwickler", "admin", "server",
+    "t-shirt", "tasse", "sticker", "hoodie", "merch", "print-on-demand", "bedrucken",
+    "shop", "produkt", "design", "logo", "marketing", "social media", "kopie", "copy",
+    "werbung", "post", "artikel", "mode", "bekleidung", "geschenk", "geschenkidee",
+    "nerd", "nerdig", "sarkasmus", "humor", "witz", "lustig", "katzenliebhaber",
+    "pixel", "code", "coding", "bug", "debug", "linux", "terminal", "shell",
+    "entwicklerhumor", "it-humor", "cat", "cats", "geekcat",
+    # English
+    "merchandise", "apparel", "clothing", "gift", "present", "print on demand",
+    "programmer", "developer", "sysadmin", "coding", "debugging", "sarcastic",
+    "feline", "kitten", "pet", "animal", "humor", "funny",
+    # Spanish
+    "camiseta", "taza", "pegatina", "sudorera", "regalo", "mercadotecnia",
+    "programador", "desarrollador", "gato", "gatos", "humor", "geek",
+}
+
+_GEEKCAT_IRRELEVANT_PATTERNS = [
+    # Cooking / Recipes
+    r"\b(recipe|cooking|baking|kitchen|dinner|lunch|breakfast|kochen|backen|rezept|koch|back|küche|ingredient)\b",
+    # Sports
+    r"\b(sports|football|soccer|basketball|tennis|fussball|fußball|sport|team|player|trainer|stadium|match|game|league|championship)\b",
+    # Finance / Investing
+    r"\b(stock|stock market|crypto|bitcoin|investing|invest|trading|trade|aktien|investieren|finanz|bank|konto|finance|financial|portfolio)\b",
+    # Politics
+    r"\b(politics|political|election|voting|vote|parliament|politik|wahl|regierung|präsident|president|minister|senator|congress|government)\b",
+    # Health / Medical
+    r"\b(health|medical|hospital|doctor|symptom|treatment|gesundheit|krankenhaus|arzt|krankheit|medizin|headache|pain|surgery|diagnosis|disease|patient|clinic)\b",
+    # Travel
+    r"\b(hotel|flight|airline|travel agency|reise|urlaub|hotel|flug|tourist|tourism|vacation|destination|booking)\b",
+    # Weather
+    r"\b(weather|forecast|rain|temperature|wetter|vorhersage|climate|sunny|cloudy)\b",
+    # Education / Homework
+    r"\b(math|homework|exam|test|lesson|classroom|unterricht|hausaufgabe|prüfung|assignment|grade|school|university|college)\b",
+    # Entertainment (movies, music — unless geek/cat related)
+    r"\b(movie|film|actor|actress|singer|album|concert|tv show|television|netflix)\b",
+]
+
+
+def _is_geekcat_related(text: str) -> bool:
+    """Check if the query or URL content is related to The Geek Cat brand.
+
+    Returns True if the text mentions:
+    - The Geek Cat brand or its products
+    - IT/programming/nerd culture topics
+    - Cats
+    - Merchandise/print-on-demand
+    - Marketing/content creation
+
+    Returns False for clearly irrelevant topics.
+    """
+    lower = (text or "").strip().lower()
+    if not lower or len(lower) < 5:
+        return True  # Too short to judge, let the model decide
+
+    # Check for known irrelevant patterns first
+    import re
+    for pattern in _GEEKCAT_IRRELEVANT_PATTERNS:
+        if re.search(pattern, lower):
+            return False
+
+    # Check for relevant keywords
+    for keyword in _GEEKCAT_KEYWORDS:
+        if keyword in lower:
+            return True
+
+    # Allow URLs from known domains
+    for domain in _GEEKCAT_DOMAINS:
+        if domain in lower:
+            return True
+
+    # Ambiguous — let the LLM decide
+    return True
+
+
+_IRRELEVANT_RESPONSES: dict[str, str] = {
+    "de": (
+        "Es tut mir leid, aber das liegt außerhalb meines Fachbereichs. "
+        "Ich bin der Marketing-Assistent von **The Geek Cat** \u2013 "
+        "einem deutschen Print-on-Demand-Store für sarkastische IT- und Katzen-Merchandise. "
+        "Ich kann dir bei der Erstellung von Marketingtexten, Bildprompts, "
+        "SEO-Metadaten und Social-Media-Beiträgen für The Geek Cat Produkte helfen. "
+        "Bitte versuche es mit einer Anfrage zu diesem Thema."
+    ),
+    "en": (
+        "Sorry, that\u2019s outside my area of expertise. "
+        "I\u2019m the marketing assistant for **The Geek Cat** \u2013 "
+        "a German print-on-demand store selling sarcastic IT/cat-themed merchandise. "
+        "I can help you create marketing copy, image prompts, SEO metadata, "
+        "and social media posts for The Geek Cat products. "
+        "Please try a request related to this topic."
+    ),
+    "es": (
+        "Lo siento, eso está fuera de mi área de especialización. "
+        "Soy el asistente de marketing de **The Geek Cat** \u2013 "
+        "una tienda alemana de print-on-demand que vende merchandising sarcástico de TI y gatos. "
+        "Puedo ayudarte a crear textos de marketing, prompts de imágenes, "
+        "metadatos SEO y publicaciones para redes sociales de productos The Geek Cat. "
+        "Por favor, intenta con una solicitud relacionada con este tema."
+    ),
+}
+
+
+_NO_PRODUCT_CONTEXT_RESPONSE: dict[str, str] = {
+    "de": (
+        "Bevor ich einen Social-Media-Beitrag oder SEO-Metadaten erstellen kann, "
+        "ben\u00f6tige ich zun\u00e4chst ein Produktdesign oder einen Bild-Prompt. "
+        "Bitte erstelle zuerst einen Bild-Prompt oder lade ein Produktbild / Logo hoch. "
+        "Du kannst auch einen Link zu einem Produkt angeben, damit ich die Informationen daraus verwenden kann."
+    ),
+    "en": (
+        "Before I can create a social media post or SEO metadata, "
+        "I need a product design or image prompt first. "
+        "Please create an image prompt or upload a product image / logo. "
+        "You can also provide a link to a product so I can use the information from it."
+    ),
+    "es": (
+        "Antes de poder crear una publicaci\u00f3n o metadatos SEO, "
+        "necesito primero un dise\u00f1o de producto o un prompt de imagen. "
+        "Por favor, crea un prompt de imagen o sube una imagen del producto / logo. "
+        "Tambi\u00e9n puedes proporcionar un enlace a un producto para usar la informaci\u00f3n del mismo."
+    ),
+}
+
+
+_CREATION_KEYWORDS = re.compile(
+    r"(create|erstelle|crea|generate|genera|generar|write|schreib|escribe|make|mach|haz)"
+    r"(\s+\w+){0,4}\s*(post|beitrag|publicación|entry|eintrag)"
+    r"|(create|generate|genera|write|make|erstelle|crea)"
+    r"(\s+\w+){0,4}\s*(seo|social media|instagram|facebook|linkedin|tweet|thread|image|bild|imagen|logo|design|diseño|caption|text|copy)"
+    r"|(instagram|social media|post|seo)\s+(post|beitrag|metadaten|metadata|meta)"
+    r"|prompt\s*(für|for|para|de)\s*(ein|a|un)?\s*(bild|image|imagen|logo)"
+    r"|(crear|generar|escribir|hacer)\s+(una\s+)?(publicación|imagen|logo)"
+    r"|(einen|ein)\s+(beitrag|post|social.media|bild|logo)\s+(erstellen|generieren|schreiben|machen)",
+    re.IGNORECASE,
+)
+
+
+def _is_creation_request(text: str) -> bool:
+    """Check if the user is asking to create content (post, SEO, image, etc.)."""
+    return bool(_CREATION_KEYWORDS.search(text))
+
+
+def _has_product_context(thread_dict: dict | None, instruction: str = "") -> bool:
+    """Check if the thread has product context (image prompt, image, or URL content)
+    needed to generate SEO or social media posts."""
+    if not thread_dict:
+        return bool(instruction.strip())
+
+    messages = thread_dict.get("messages", [])
+
+    # Check for image prompt messages
+    for msg in messages:
+        if msg.get("is_image_prompt"):
+            return True
+
+    # Check for messages with image_url
+    for msg in messages:
+        if msg.get("image_url"):
+            return True
+
+    # Check for product context in thread dict
+    if thread_dict.get("product_context") or thread_dict.get("product_skus"):
+        return True
+
+    # Check if instruction contains a URL (product link provided)
+    if instruction.strip() and _extract_urls(instruction):
+        return True
+
+    # Check for image prompt content in assistant messages (content starts with 🎨)
+    for msg in messages:
+        if msg.get("role") == "assistant" and str(msg.get("content") or "").startswith("\U0001f3a8"):
+            return True
+
+    return False
+
+
+def _detect_language(text: str) -> str:
+    """Detect if text is German, Spanish, or default to English."""
+    lower = text.lower()
+    # German-specific characters
+    if any(c in lower for c in "äöüß"):
+        return "de"
+    # Spanish-specific characters or common Spanish words
+    if any(c in lower for c in "ñáéíóú¿¡"):
+        return "es"
+    # Common Spanish words without accents
+    spanish_indicators = [
+        "crea un", "crea una", "diseña", "necesito", "quiero", "puedes", "por favor",
+        "publicación", "redes sociales", "para mi", "para mis", "genera un", "genera una",
+        "haz un", "haz una", "escribe un", "el link", "la página", "esta página",
+    ]
+    for indicator in spanish_indicators:
+        if indicator in lower:
+            return "es"
+    return "en"
+
+
 SOCIAL_POST_SYSTEM_PROMPT = (
     "You are a social media marketing specialist for 'The Geek Cat' brand \u2014 "
     "a German print-on-demand store selling sarcastic IT/cat-themed merchandise. "
@@ -1375,6 +1658,21 @@ async def _sse_generate_social_post(thread_id: str, body: SocialPostRequest):
             thread_dict = _load_thread_record(thread_id) or {}
         msg_list = thread_dict.get("messages", [])
         recent_context = _format_recent_conversation(msg_list)
+
+        # Validate product context exists (image prompt, logo, or product link)
+        if not _has_product_context(thread_dict, body.instruction):
+            lang = _detect_language(body.instruction)
+            yield _encode_sse("delta", {"text": _NO_PRODUCT_CONTEXT_RESPONSE.get(lang, _NO_PRODUCT_CONTEXT_RESPONSE["en"])})
+            now = _utc_now_iso()
+            if not thread_dict.get("id"):
+                thread_dict = {"id": thread_id, "user_id": body.user_id, "title": None, "created_at": now, "updated_at": now, "status": "active", "messages": list(msg_list)}
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _NO_PRODUCT_CONTEXT_RESPONSE.get(lang, _NO_PRODUCT_CONTEXT_RESPONSE["en"]), "created_at": now}
+            thread_dict["messages"] = list(thread_dict.get("messages", [])) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread_dict["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
 
         if not body.product_type:
             # No product type selected -- ask user with suggestion cards
@@ -1436,6 +1734,35 @@ async def _sse_generate_social_post(thread_id: str, body: SocialPostRequest):
                 instruction,
                 flags=re.IGNORECASE,
             )
+
+        # Fetch URL content if the instruction contains a URL
+        urls = _extract_urls(instruction)
+        url_contexts: list[str] = []
+        for url in urls:
+            url_text = _fetch_url_text(url)
+            if url_text:
+                url_contexts.append(f"Content from {url}:\n{url_text}")
+        if url_contexts:
+            instruction += "\n\n" + "\n\n---\n\n".join(url_contexts)
+
+        # Validate relevance
+        if url_contexts:
+            combined_text = instruction + "\n".join(url_contexts)
+        else:
+            combined_text = instruction
+        if not _is_geekcat_related(combined_text):
+            lang = _detect_language(combined_text)
+            yield _encode_sse("delta", {"text": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"])})
+            now = _utc_now_iso()
+            if not thread_dict.get("id"):
+                thread_dict = {"id": thread_id, "user_id": body.user_id, "title": None, "created_at": now, "updated_at": now, "status": "active", "messages": list(msg_list)}
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+            assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": _IRRELEVANT_RESPONSES.get(lang, _IRRELEVANT_RESPONSES["en"]), "created_at": now}
+            thread_dict["messages"] = list(thread_dict.get("messages", [])) + [user_msg, assistant_msg]
+            cached_thread = _thread_cache_update(thread_id, {"messages": thread_dict["messages"], "updated_at": now})
+            _save_thread_record(cached_thread)
+            yield _encode_sse("done", {"title": cached_thread.get("title"), "status": "active", "messages": cached_thread.get("messages", [])})
+            return
 
         system_content = SOCIAL_POST_SYSTEM_PROMPT
         system_content += f"\n\nProduct type: {body.product_type}"
@@ -2040,6 +2367,59 @@ def generate_social_post_stream(thread_id: str, body: SocialPostRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+_ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+@router.post("/chat/threads/{thread_id}/upload-image")
+async def upload_thread_image(
+    thread_id: str,
+    user_id: str = "",
+    file: UploadFile = File(...),
+):
+    """Upload a product image or logo and attach it to the thread."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image format '{ext}'. Allowed: {', '.join(sorted(_ALLOWED_IMAGE_EXTENSIONS))}",
+        )
+
+    images_dir = Path(__file__).resolve().parent.parent / "static" / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = images_dir / filename
+    content = await file.read()
+    filepath.write_bytes(content)
+
+    api_base = os.environ.get("API_BASE_URL", "http://localhost:8000")
+    image_url = f"{api_base}/static/images/{filename}"
+
+    # Attach the image as an assistant message in the thread
+    thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, user_id or None) or {
+        "id": thread_id, "user_id": user_id, "title": None,
+        "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(),
+        "status": "active", "messages": [],
+    }
+    thread = _thread_cache_set(thread)
+    now = _utc_now_iso()
+    user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": f"[Uploaded image: {file.filename}]", "created_at": now}
+    assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": "", "created_at": now, "image_url": image_url}
+    assistant_msg["suggestions"] = [
+        {"action": "generate_image_prompt", "label": "Create Image Prompt", "icon": "i-lucide-wand", "description": "Generate a product image prompt from this image"},
+        {"action": "generate_seo", "label": "SEO Metadata", "icon": "i-lucide-search", "description": "Generate SEO title, keywords and description"},
+        {"action": "create_post", "label": "Create Social Media Post", "icon": "i-lucide-megaphone", "description": "Create a marketing post for this image"},
+    ]
+    thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
+    cached_thread = _thread_cache_update(thread_id, {"messages": thread["messages"], "updated_at": now})
+    _save_thread_record(cached_thread)
+
+    return {"image_url": image_url, "thread_id": thread_id, "status": "active", "messages": cached_thread.get("messages", [])}
 
 
 @router.delete("/chat/threads/{thread_id}", response_model=DeleteThreadResponse)

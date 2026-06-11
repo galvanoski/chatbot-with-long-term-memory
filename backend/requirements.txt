@@ -26,3 +26,4 @@ uuid-utils>=0.12.0
 
 # Testing
 pytest>=8.0.0
+python-multipart>=0.0.32

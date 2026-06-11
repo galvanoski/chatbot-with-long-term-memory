@@ -142,6 +142,40 @@ function runSuggestion(action: string, msg: any) {
 }
 
 const input = ref('')
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploading = ref(false)
+
+async function uploadImage() {
+  fileInput.value?.click()
+}
+
+async function handleFileSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file || !currentThread.value) return
+  uploading.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await $fetch(`/api/threads/${chatId}/upload-image`, {
+      method: 'POST',
+      body: formData
+    }) as { image_url?: string; messages?: Array<Record<string, unknown>> }
+    if (res.messages) {
+      currentThread.value!.messages = res.messages as any
+      chat.messages.value = transformMessages(res.messages as any)
+      currentThread.value!.updated_at = new Date().toISOString()
+      chat.upsertThreadListItem(currentThread.value!)
+    }
+  } catch (e: any) {
+    const toast = useToast()
+    toast.add({ title: 'Upload failed', description: e?.message || 'Could not upload image', color: 'error', duration: 4000 })
+  } finally {
+    uploading.value = false
+    target.value = '' as any
+  }
+}
+
 const isLoading = computed(() => unref(chat.loading))
 const isSending = computed(() => unref(chat.sending))
 const isAwaiting = computed(() => unref(chat.isAwaitingApproval))
@@ -655,6 +689,24 @@ const debugState = computed(() => JSON.stringify({
       <div class="chat-composer-shell">
         <div class="mx-auto w-full max-w-3xl space-y-2">
           <form class="chat-composer-form" @submit.prevent="send">
+            <input
+              ref="fileInput"
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              class="hidden"
+              @change="handleFileSelected"
+            />
+            <UTooltip text="Bild hochladen">
+              <UButton
+                icon="i-lucide-upload"
+                variant="ghost"
+                color="neutral"
+                class="rounded-full"
+                :disabled="isLoading || uploading"
+                :loading="uploading"
+                @click="uploadImage"
+              />
+            </UTooltip>
             <UButton
               icon="i-lucide-wand-sparkles"
               variant="ghost"
