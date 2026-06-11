@@ -293,6 +293,7 @@ export function useGeekCatChat() {
       content: text,
       created_at: new Date().toISOString()
     }
+    const assistantStreamId = `temp-assistant-${Date.now()}`
     currentThread.value.messages = [...currentThread.value.messages, optimisticUserMessage]
     messages.value = [
       ...previousUiMessages,
@@ -300,6 +301,14 @@ export function useGeekCatChat() {
         ...optimisticUserMessage,
         name: 'Du',
         parts: [{ type: 'text' as const, text: text }]
+      },
+      {
+        id: assistantStreamId,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: '',
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: '' }]
       }
     ]
 
@@ -316,19 +325,6 @@ export function useGeekCatChat() {
       if (!streamResponse.ok || !streamResponse.body) {
         throw new Error('Streaming endpoint unavailable')
       }
-
-      const assistantStreamId = `temp-assistant-${Date.now()}`
-      messages.value = [
-        ...messages.value,
-        {
-          id: assistantStreamId,
-          role: 'assistant',
-          name: 'The Geek Cat',
-          content: '',
-          created_at: new Date().toISOString(),
-          parts: [{ type: 'text' as const, text: '' }]
-        }
-      ]
 
       await consumeSSEStream(streamResponse.body, async (event, payload) => {
         if (controller.signal.aborted) {
@@ -405,30 +401,27 @@ export function useGeekCatChat() {
 
   async function approveCopy(
     edited?: { hook: string; body: string; cta: string } | string,
-    feedback?: string
+    feedback?: string,
+    messageId?: string
   ): Promise<boolean> {
     if (!currentThread.value) return false
     loading.value = true
     error.value = null
     try {
+      const bodyArgs: Record<string, unknown> = {}
+      if (typeof edited === 'string') {
+        bodyArgs.edited_copy = edited
+      } else if (edited) {
+        bodyArgs.edited_parts = edited
+        bodyArgs.edited_copy = [edited.hook, edited.body, edited.cta].filter(Boolean).join('\n\n')
+      }
+      if (feedback) bodyArgs.feedback = feedback
+      if (messageId) bodyArgs.message_id = messageId
       const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/approve`,
         {
           method: 'POST',
-          body: typeof edited === 'string'
-            ? {
-                edited_copy: edited,
-                feedback
-              }
-            : edited
-              ? {
-                  edited_parts: edited,
-                  edited_copy: [edited.hook, edited.body, edited.cta].filter(Boolean).join('\n\n'),
-                  feedback
-                }
-              : feedback
-                ? { feedback }
-                : undefined
+          body: Object.keys(bodyArgs).length ? bodyArgs : undefined
         }
       ), 'Approve response')
       currentThread.value.messages = res.messages
@@ -446,16 +439,18 @@ export function useGeekCatChat() {
     }
   }
 
-  async function rejectCopy(feedback: string): Promise<boolean> {
+  async function rejectCopy(feedback: string, messageId?: string): Promise<boolean> {
     if (!currentThread.value) return false
     loading.value = true
     error.value = null
     try {
+      const bodyArgs: Record<string, unknown> = { feedback }
+      if (messageId) bodyArgs.message_id = messageId
       const res = parseValidatedResponse(threadActionResponseSchema, await $fetch(
         `/api/threads/${currentThread.value.id}/reject`,
         {
           method: 'POST',
-          body: { feedback }
+          body: bodyArgs
         }
       ), 'Reject response')
       currentThread.value.messages = res.messages
@@ -476,23 +471,36 @@ export function useGeekCatChat() {
     }
   }
 
-  async function generateImagePrompt(instruction: string): Promise<boolean> {
+  async function generateImagePrompt(instruction: string, silent: boolean = false): Promise<boolean> {
     if (!currentThread.value || loading.value) return false
     const previousUiMessages = [...messages.value]
     cancelMessageAnimation()
     const controller = new AbortController()
     animationController.value = controller
 
-    const optimisticUserMessage = {
-      id: `temp-user-${Date.now()}`,
-      role: 'user' as const,
-      content: instruction,
-      created_at: new Date().toISOString()
-    }
-    messages.value = [
+    const assistantStreamId = `temp-image-${Date.now()}`
+    const newMessages = [
       ...previousUiMessages,
-      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: instruction }] }
+      {
+        id: assistantStreamId,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: '',
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: '' }]
+      }
     ]
+    if (!silent) {
+      newMessages.splice(previousUiMessages.length, 0, {
+        id: `temp-user-${Date.now()}`,
+        role: 'user' as const,
+        content: instruction,
+        created_at: new Date().toISOString(),
+        name: 'Du',
+        parts: [{ type: 'text' as const, text: instruction }]
+      })
+    }
+    messages.value = newMessages
 
     loading.value = true
     error.value = null
@@ -500,25 +508,12 @@ export function useGeekCatChat() {
       const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/image-prompt/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction })
+        body: JSON.stringify({ instruction, silent })
       })
 
       if (!streamResponse.ok || !streamResponse.body) {
         throw new Error('Image prompt endpoint unavailable')
       }
-
-      const assistantStreamId = `temp-image-${Date.now()}`
-      messages.value = [
-        ...messages.value,
-        {
-          id: assistantStreamId,
-          role: 'assistant',
-          name: 'The Geek Cat',
-          content: '',
-          created_at: new Date().toISOString(),
-          parts: [{ type: 'text' as const, text: '' }]
-        }
-      ]
 
       await consumeSSEStream(streamResponse.body, async (event, payload) => {
         if (controller.signal.aborted) return
@@ -579,6 +574,7 @@ export function useGeekCatChat() {
     const controller = new AbortController()
     animationController.value = controller
 
+    const assistantStreamId = `temp-seo-${Date.now()}`
     const optimisticUserMessage = {
       id: `temp-user-${Date.now()}`,
       role: 'user' as const,
@@ -587,7 +583,15 @@ export function useGeekCatChat() {
     }
     messages.value = [
       ...previousUiMessages,
-      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: instruction }] }
+      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: instruction }] },
+      {
+        id: assistantStreamId,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: '',
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: '' }]
+      }
     ]
 
     loading.value = true
@@ -602,19 +606,6 @@ export function useGeekCatChat() {
       if (!streamResponse.ok || !streamResponse.body) {
         throw new Error('SEO endpoint unavailable')
       }
-
-      const assistantStreamId = `temp-seo-${Date.now()}`
-      messages.value = [
-        ...messages.value,
-        {
-          id: assistantStreamId,
-          role: 'assistant',
-          name: 'The Geek Cat',
-          content: '',
-          created_at: new Date().toISOString(),
-          parts: [{ type: 'text' as const, text: '' }]
-        }
-      ]
 
       await consumeSSEStream(streamResponse.body, async (event, payload) => {
         if (controller.signal.aborted) return
@@ -673,16 +664,29 @@ export function useGeekCatChat() {
     const controller = new AbortController()
     animationController.value = controller
 
-    const optimisticUserMessage = {
-      id: `temp-user-${Date.now()}`,
-      role: 'user' as const,
-      content: prompt || 'Generate image',
-      created_at: new Date().toISOString()
-    }
-    messages.value = [
+    const assistantStreamId = `temp-image-${Date.now()}`
+    const newMessages = [
       ...previousUiMessages,
-      { ...optimisticUserMessage, name: 'Du', parts: [{ type: 'text' as const, text: prompt || 'Generate image' }] }
+      {
+        id: assistantStreamId,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: '',
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: '' }]
+      }
     ]
+    if (!sourceMessageId) {
+      newMessages.splice(previousUiMessages.length, 0, {
+        id: `temp-user-${Date.now()}`,
+        role: 'user' as const,
+        content: prompt || 'Generate image',
+        created_at: new Date().toISOString(),
+        name: 'Du',
+        parts: [{ type: 'text' as const, text: prompt || 'Generate image' }]
+      })
+    }
+    messages.value = newMessages
 
     loading.value = true
     error.value = null
@@ -696,19 +700,6 @@ export function useGeekCatChat() {
       if (!streamResponse.ok || !streamResponse.body) {
         throw new Error('Image endpoint unavailable')
       }
-
-      const assistantStreamId = `temp-image-${Date.now()}`
-      messages.value = [
-        ...messages.value,
-        {
-          id: assistantStreamId,
-          role: 'assistant',
-          name: 'The Geek Cat',
-          content: '',
-          created_at: new Date().toISOString(),
-          parts: [{ type: 'text' as const, text: '' }]
-        }
-      ]
 
       await consumeSSEStream(streamResponse.body, async (event, payload) => {
         if (controller.signal.aborted) return
@@ -784,6 +775,7 @@ export function useGeekCatChat() {
     const controller = new AbortController()
     animationController.value = controller
 
+    const assistantStreamId = `temp-regen-${Date.now()}`
     loading.value = true
     error.value = null
     try {
@@ -797,19 +789,6 @@ export function useGeekCatChat() {
       if (!streamResponse.ok || !streamResponse.body) {
         throw new Error('Streaming endpoint unavailable')
       }
-
-      const assistantStreamId = `temp-regen-${Date.now()}`
-      messages.value = [
-        ...messages.value,
-        {
-          id: assistantStreamId,
-          role: 'assistant',
-          name: 'The Geek Cat',
-          content: '',
-          created_at: new Date().toISOString(),
-          parts: [{ type: 'text' as const, text: '' }]
-        }
-      ]
 
       await consumeSSEStream(streamResponse.body, async (event, payload) => {
         if (controller.signal.aborted) return

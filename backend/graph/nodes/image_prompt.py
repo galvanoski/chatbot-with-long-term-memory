@@ -24,7 +24,7 @@ def image_prompt_node(state: AgentState, mw=None) -> dict:
     if not instruction:
         instruction = "a cat programmer logo"
 
-    logger.info("image_prompt_node: generating prompt for '%s'", instruction[:60])
+    logger.info("image_prompt_node: generating prompt for '%s'", instruction[:120])
 
     llm = ChatOpenAI(
         model="openai/gpt-5-mini",

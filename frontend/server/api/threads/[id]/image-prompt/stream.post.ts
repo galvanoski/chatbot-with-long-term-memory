@@ -6,13 +6,15 @@ export default defineEventHandler(async (event) => {
   const userId = getUserId(event)
   const body = await readBody(event)
   const instruction = String(body?.instruction || '').slice(0, 2000) || 'a cat programmer logo'
+  const silent = body?.silent === true
 
   const upstream = await fetch(`${apiBaseUrl}/api/chat/threads/${threadId}/image-prompt/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       user_id: userId,
-      instruction
+      instruction,
+      silent
     })
   }).catch(() => null)
 

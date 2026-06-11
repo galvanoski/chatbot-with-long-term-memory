@@ -63,10 +63,12 @@ export const threadMessageSchema = z.object({
   content: z.string(),
   created_at: z.string(),
   pending_approval: z.boolean().optional(),
+  rating: z.enum(['up', 'down']).nullish(),
   usage: tokenUsageSchema.nullish(),
   rag_trace: z.array(ragTraceEventSchema).nullish(),
   image_url: z.string().nullish(),
-  seo_metadata: seoMetadataSchema.nullish()
+  seo_metadata: seoMetadataSchema.nullish(),
+  is_image_prompt: z.boolean().optional(),
 })
 
 export const threadSourceSchema = z.object({

@@ -4,6 +4,7 @@ export interface Message {
   content: string
   created_at: string
   pending_approval?: boolean
+  rating?: 'up' | 'down' | null
   usage?: {
     input_tokens: number
     output_tokens: number
@@ -12,6 +13,7 @@ export interface Message {
   }
   rag_trace?: Array<Record<string, unknown>> | null
   image_url?: string | null
+  is_image_prompt?: boolean
   seo_metadata?: {
     seo_title?: string
     focus_keyword?: string
@@ -34,6 +36,7 @@ export interface UIMessage {
   }>
   created_at: string
   pending_approval?: boolean
+  rating?: 'up' | 'down' | null
   usage?: {
     input_tokens: number
     output_tokens: number
@@ -42,6 +45,7 @@ export interface UIMessage {
   }
   rag_trace?: Array<Record<string, unknown>> | null
   image_url?: string | null
+  is_image_prompt?: boolean
   seo_metadata?: {
     seo_title?: string
     focus_keyword?: string

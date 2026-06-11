@@ -53,6 +53,14 @@ class GeekCatMiddleware(AgentMiddleware):
         state["_rag_trace"] = []
         add_rag_trace("agent_start", user_id=user_id, query=query[:200])
 
+        # Detect image/logo intent from user message → generate only the prompt, not the image
+        if self._is_image_request(query):
+            logger.info("before_agent: detected image intent in query")
+            state["_current_node"] = "image_prompt_generator"
+            state["image_prompt_instruction"] = query
+            # Explicitly prevent automatic image generation (checkpoint might carry old value)
+            state["image_generation_requested"] = False
+
         # Load brand rules from LTM
         brand_rules = self.memory.get_brand_rules(user_id)
         state["brand_rules"] = brand_rules
@@ -65,6 +73,27 @@ class GeekCatMiddleware(AgentMiddleware):
         ltm_texts = [m["text"][:200] for m in ltm_context]
         add_rag_trace("ltm_retrieve", docs=len(ltm_context), latency_ms=round(ltm_latency, 1), texts=ltm_texts)
 
+        # Retrieve past user evaluations so the copywriter can learn from feedback
+        # Only inject if not already set (e.g. from regeneration instruction)
+        existing_human_feedback = (state.get("human_feedback") or "").strip()
+        if not existing_human_feedback:
+            try:
+                coll = self.memory.ltm.vector_store.get_user_collection(user_id)
+                eval_results = coll.get(where={"type": "user_evaluation"})
+                if eval_results and eval_results.get("ids"):
+                    evals = []
+                    for i, doc_id in enumerate(eval_results["ids"]):
+                        meta = (eval_results.get("metadatas") or [{}])[i] or {}
+                        text = (eval_results.get("documents") or [""])[i] or ""
+                        rating = meta.get("rating", "unknown")
+                        evals.append(f"(User {rating}-voted) {text[:300]}")
+                    if evals:
+                        feedback_text = "Past user evaluations:\n" + "\n".join(f"- {e}" for e in evals[-3:])
+                        state["human_feedback"] = feedback_text
+                        logger.info("before_agent: injected %d evaluations as human_feedback", len(evals))
+            except Exception as exc:
+                logger.debug("before_agent: failed to fetch evaluations: %s", exc)
+
         # Init analytics
         _request_start_time.set(time.time())
         analytics = [{"event": "agent_start", "timestamp": time.time()}]
@@ -76,6 +105,28 @@ class GeekCatMiddleware(AgentMiddleware):
             state["_entry_node"] = state.get("_current_node", "")
 
         return state
+
+    @staticmethod
+    def _is_image_request(text: str) -> bool:
+        """Check if the user message is asking for an image/logo generation."""
+        lower = (text or "").strip().lower()
+        if not lower:
+            return False
+        # Patterns that clearly request image generation (not just mentioning an image)
+        patterns = [
+            "generiere ein logo", "generiere ein bild", "erstelle ein logo", "erstelle ein bild",
+            "generate a logo", "generate an image", "generate a picture", "create a logo",
+            "crea un logo", "crea una imagen", "diseña un logo",
+            # Also catch "logo:" prefix pattern (e.g. "Logo: cat wearing sunglasses")
+            lambda t: t.startswith("logo:") or t.startswith("logo "),
+        ]
+        for p in patterns:
+            if callable(p):
+                if p(lower):
+                    return True
+            elif p in lower:
+                return True
+        return False
 
     # ──────────────────────────────────────────────
     # Hook 2: before_model

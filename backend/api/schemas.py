@@ -19,6 +19,7 @@ class ApprovalRequest(BaseModel):
     feedback: Optional[str] = None
     edited_copy: Optional[str] = None
     edited_parts: Optional[dict[str, str]] = None
+    message_id: Optional[str] = None
 
 
 class RegenerateRequest(BaseModel):
@@ -29,6 +30,7 @@ class RegenerateRequest(BaseModel):
 class ImagePromptRequest(BaseModel):
     user_id: str
     instruction: str = "a cat programmer logo"
+    silent: bool = False
 
 
 class SEORequest(BaseModel):
@@ -118,6 +120,10 @@ class ThreadMessageResponse(BaseModel):
     pending_approval: bool = False
     usage: Optional[dict] = None
     rag_trace: Optional[list[dict]] = None
+    image_url: Optional[str] = None
+    seo_metadata: Optional[dict] = None
+    is_image_prompt: Optional[bool] = False
+    rating: Optional[str] = None
 
 
 class ThreadSourceResponse(BaseModel):

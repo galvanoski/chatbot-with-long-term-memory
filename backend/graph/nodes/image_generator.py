@@ -60,20 +60,23 @@ def _save_base64_image(data_url: str, images_dir: str | None = None) -> str | No
         return None
 
 
-def _call_openrouter_image(prompt: str, timeout: int = 120) -> str | None:
+def _call_openrouter_image(prompt: str, timeout: int = 120) -> tuple[str | None, dict | None]:
     """Call OpenRouter Chat Completions API with an image-generation model.
 
-    Tries models in order, saves returned base64 image to disk.
+    Returns (url_or_none, usage_dict_or_none).
     """
     for model, modalities in _IMAGE_MODELS:
-        data_url = _try_image_model(model, modalities, prompt, timeout)
-        if data_url:
-            return _save_base64_image(data_url)
-    return None
+        result = _try_image_model(model, modalities, prompt, timeout)
+        if result:
+            data_url, usage = result
+            saved = _save_base64_image(data_url)
+            if saved:
+                return saved, usage
+    return None, None
 
 
-def _try_image_model(model: str, modalities: list[str], prompt: str, timeout: int) -> str | None:
-    """Try a single image model using the OpenAI SDK and return the image URL or None."""
+def _try_image_model(model: str, modalities: list[str], prompt: str, timeout: int) -> tuple[str, dict] | None:
+    """Try a single image model and return (data_url, usage) or None."""
     try:
         from openai import OpenAI
         client = OpenAI(
@@ -90,6 +93,7 @@ def _try_image_model(model: str, modalities: list[str], prompt: str, timeout: in
         # Access raw JSON to preserve non-standard fields like "images"
         body = raw_response.http_response.json()
         logger.info("_try_image_model(%s): status=%s body_keys=%s", model, raw_response.http_response.status_code, list(body.keys()))
+        usage = body.get("usage") or {}
         if raw_response.http_response.status_code != 200:
             logger.warning("_try_image_model(%s): error: %s", model, json.dumps(body)[:500])
             return None
@@ -101,16 +105,20 @@ def _try_image_model(model: str, modalities: list[str], prompt: str, timeout: in
         msg_keys = list(message.keys())
         images = message.get("images", None)
         logger.info("_try_image_model(%s): msg_keys=%s has_images=%s", model, msg_keys, images is not None)
+        data_url: str | None = None
         if images:
             img = images[0].get("image_url", {})
             url = img.get("url")
             if url:
                 logger.info("_try_image_model(%s): got image len=%s", model, len(url))
-                return url
-        content = message.get("content", "") or ""
-        if content and content.startswith("data:"):
-            logger.info("_try_image_model(%s): got image in content", model)
-            return content
+                data_url = url
+        if not data_url:
+            content = message.get("content", "") or ""
+            if content and content.startswith("data:"):
+                logger.info("_try_image_model(%s): got image in content", model)
+                data_url = content
+        if data_url:
+            return data_url, usage
     except Exception as exc:
         logger.warning("_try_image_model(%s) failed: %s", model, exc)
     return None
@@ -164,7 +172,7 @@ def image_generator_node(state: AgentState, mw=None) -> dict:
         source_text = state.get("image_prompt_instruction", "a cat programmer logo")
 
     api_start = time.time()
-    image_url = _call_openrouter_image(source_text)
+    image_url, image_usage = _call_openrouter_image(source_text)  # noqa: F841 (usage not persisted)
     api_latency = (time.time() - api_start) * 1000
 
     _rag_trace.append({

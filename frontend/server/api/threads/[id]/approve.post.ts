@@ -7,6 +7,7 @@ export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   const editedCopy = assertOptionalString(body?.edited_copy, 'edited_copy', 12000)
   const feedback = assertOptionalString(body?.feedback, 'feedback', 1200)
+  const messageId = assertOptionalString(body?.message_id, 'message_id', 64)
   const editedParts = body?.edited_parts && typeof body.edited_parts === 'object'
     ? body.edited_parts
     : undefined
@@ -22,7 +23,8 @@ export default defineEventHandler(async (event) => {
         user_id: userId,
         edited_copy: editedCopy,
         edited_parts: editedParts,
-        feedback
+        feedback,
+        message_id: messageId
       }
     })
 

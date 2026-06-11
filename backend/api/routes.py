@@ -42,7 +42,7 @@ from backend.api.schemas import (
 )
 from backend.graph.tools.rag import load_products_to_catalog
 from backend.memory.manager import MemoryManager
-from backend.middleware.geekcat import GeekCatMiddleware
+from backend.middleware.geekcat import GeekCatMiddleware, _request_analytics
 from backend.graph.nodes.seo import SEO_SYSTEM_PROMPT
 from backend.tracking.rag_trace import get_rag_trace
 from backend.tracking.usage import UsageTracker, extract_usage_from_llm_output
@@ -529,6 +529,9 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
         state_snapshot = await _graph.aget_state(config)
         snap_values = state_snapshot.values if state_snapshot else {}
 
+        # Capture analytics from context var before after_agent clears it
+        analytics_log: list[dict] = _request_analytics.get() or []
+
         _middleware.after_agent(snap_values, config)
 
         existing_thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
@@ -548,6 +551,19 @@ async def _sse_send_message(thread_id: str, body: MessageSendRequest):
 
         # Attach aggregate token usage and RAG trace to the last assistant message
         usage_dict = usage_tracker.to_dict() if usage_tracker._calls else None
+        if not usage_dict:
+            # Fallback: extract usage from middleware-tracked analytics log
+            for entry in analytics_log:
+                if entry.get("event") == "llm_call":
+                    usage_entry = entry.get("usage", {})
+                    if usage_entry:
+                        model_name = entry.get("model", "openai/gpt-5-mini")
+                        input_tokens = usage_entry.get("input_tokens", 0) or usage_entry.get("prompt_tokens", 0)
+                        output_tokens = usage_entry.get("output_tokens", 0) or usage_entry.get("completion_tokens", 0)
+                        if input_tokens or output_tokens:
+                            usage_tracker.add(model=model_name, input_tokens=int(input_tokens), output_tokens=int(output_tokens))
+            if usage_tracker._calls:
+                usage_dict = usage_tracker.to_dict()
         # Merge middleware events (context var, before/after graph) with state-based events (inside graph nodes)
         middleware_trace = get_rag_trace()
         state_trace = snap_values.get("_rag_trace", [])
@@ -667,8 +683,8 @@ async def _sse_generate_image(thread_id: str, body: ImageGenerationRequest):
         # Call Riverflow V2.5 Pro directly — no GPT-5-mini refinement
         logger.info("_sse_generate_image: calling Riverflow with '%s'", source_text[:80])
         from backend.graph.nodes.image_generator import _call_openrouter_image
-        image_url = _call_openrouter_image(source_text)
-        logger.info("_sse_generate_image: result image_url=%s", image_url[:60] if image_url else "None")
+        image_url, image_usage = _call_openrouter_image(source_text)
+        logger.info("_sse_generate_image: result image_url=%s usage=%s", image_url[:60] if image_url else "None", image_usage)
 
         # Save to thread
         thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id) or {
@@ -679,11 +695,20 @@ async def _sse_generate_image(thread_id: str, body: ImageGenerationRequest):
         thread = _thread_cache_set(thread)
         now = _utc_now_iso()
 
-        if body.prompt:
+        if body.prompt and not body.source_message_id:
             user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.prompt, "created_at": now}
             thread["messages"] = list(thread.get("messages", [])) + [user_msg]
 
         msg_id = str(uuid.uuid4())
+        usage_info = None
+        if image_usage:
+            from backend.tracking.usage import UsageInfo
+            model_used = "google/gemini-2.5-flash-image"
+            input_tokens = image_usage.get("prompt_tokens", 0) or image_usage.get("input_tokens", 0) or 0
+            output_tokens = image_usage.get("completion_tokens", 0) or image_usage.get("output_tokens", 0) or 0
+            if input_tokens or output_tokens:
+                u = UsageInfo(model=model_used, input_tokens=int(input_tokens), output_tokens=int(output_tokens))
+                usage_info = u.to_dict()
         assistant_msg: dict[str, Any] = {
             "id": msg_id, "role": "assistant",
             "content": "",
@@ -691,6 +716,8 @@ async def _sse_generate_image(thread_id: str, body: ImageGenerationRequest):
         }
         if image_url:
             assistant_msg["image_url"] = image_url
+        if usage_info:
+            assistant_msg["usage"] = usage_info
 
         thread["messages"] = list(thread.get("messages", [])) + [assistant_msg]
         cached_thread = _thread_cache_update(thread_id, {
@@ -822,13 +849,23 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
 
         # Extract usage from stream chunks
         usage_dict = None
-        from backend.tracking.usage import extract_usage_from_chunks
+        from backend.tracking.usage import extract_usage_from_chunks, UsageInfo
         chunk_usage = extract_usage_from_chunks(stream_chunks)
         if chunk_usage:
             model_name = "openai/gpt-5-mini"
-            from backend.tracking.usage import UsageInfo
             u = UsageInfo(model=model_name, input_tokens=chunk_usage.get("input_tokens", 0), output_tokens=chunk_usage.get("output_tokens", 0))
             usage_dict = u.to_dict()
+        if not usage_dict and stream_chunks:
+            # Fallback: try last chunk's response_metadata (OpenRouter sometimes omits usage_metadata)
+            last = stream_chunks[-1]
+            meta = getattr(last, "response_metadata", None) or {}
+            token_usage = meta.get("token_usage") or meta.get("usage")
+            if token_usage and isinstance(token_usage, dict):
+                input_tokens = int(token_usage.get("prompt_tokens", 0) or token_usage.get("input_tokens", 0) or 0)
+                output_tokens = int(token_usage.get("completion_tokens", 0) or token_usage.get("output_tokens", 0) or 0)
+                if input_tokens or output_tokens:
+                    u = UsageInfo(model="openai/gpt-5-mini", input_tokens=input_tokens, output_tokens=output_tokens)
+                    usage_dict = u.to_dict()
 
         # Apply after_model middleware
         response = type("Response", (), {"content": raw_result})()
@@ -846,16 +883,22 @@ async def _sse_generate_image_prompt(thread_id: str, body: ImagePromptRequest):
         thread = _thread_cache_set(thread)
 
         now = _utc_now_iso()
-        user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
+        user_msg = None
+        if not body.silent:
+            user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": body.instruction, "created_at": now}
         msg_id = str(uuid.uuid4())
         content = f"🎨 **Image Prompt:**\n\n{raw_result}" if raw_result else "Could not generate image prompt."
-        assistant_msg = {"id": msg_id, "role": "assistant", "content": content, "created_at": now}
+        assistant_msg = {"id": msg_id, "role": "assistant", "content": content, "created_at": now, "is_image_prompt": True}
         if usage_dict:
             assistant_msg["usage"] = usage_dict
         rag_trace_data = get_rag_trace()
         if rag_trace_data:
             assistant_msg["rag_trace"] = rag_trace_data
-        thread["messages"] = list(thread.get("messages", [])) + [user_msg, assistant_msg]
+        new_messages = list(thread.get("messages", []))
+        if user_msg:
+            new_messages.append(user_msg)
+        new_messages.append(assistant_msg)
+        thread["messages"] = new_messages
 
         cached_thread = _thread_cache_update(thread_id, {
             "messages": thread["messages"],
@@ -1099,7 +1142,8 @@ def _extract_messages(state_values: dict) -> list[dict]:
     """Convert LangGraph AnyMessage list to frontend Message dicts.
 
     Filters out internal messages: tool results and regeneration prompts.
-    Also attaches top-level state fields (image_url) to the last assistant message.
+    Creates synthetic assistant messages from top-level state fields
+    (image_prompt_result, image_url) when no assistant message exists.
     """
     msgs = []
 
@@ -1137,6 +1181,17 @@ def _extract_messages(state_values: dict) -> list[dict]:
             "role": role,
             "content": content,
             "created_at": _utc_now_iso(),
+        })
+
+    # Create synthetic assistant message from image_prompt_result if no assistant message exists
+    image_prompt = (state_values.get("image_prompt_result") or "").strip()
+    if image_prompt and not any(m.get("role") == "assistant" for m in msgs):
+        msgs.append({
+            "id": str(len(msgs)),
+            "role": "assistant",
+            "content": image_prompt,
+            "created_at": _utc_now_iso(),
+            "is_image_prompt": True,
         })
 
     # Attach top-level image_url to the last assistant message
@@ -1766,14 +1821,27 @@ async def get_thread_state(thread_id: str, user_id: str = ""):
 
 @router.post("/chat/threads/{thread_id}/approve", response_model=ThreadActionResponse)
 async def approve_copy(thread_id: str, body: ApprovalRequest):
-    """Save a positive evaluation (thumbs-up) as a retrievable memory."""
+    """Save a positive evaluation (thumbs-up) as a retrievable memory and on the message."""
     thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
+    # Update the message's rating in the thread
+    messages = list(thread.get("messages", []))
+    if body.message_id:
+        for msg in messages:
+            if msg.get("id") == body.message_id:
+                msg["rating"] = "up"
+                break
+    else:
+        # fallback: last assistant message
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                msg["rating"] = "up"
+                break
+
     copy_text = (body.edited_copy or "").strip()
     if not copy_text:
-        messages = thread.get("messages", [])
         if messages:
             last_assistant = [m for m in messages if m.get("role") == "assistant"]
             if last_assistant:
@@ -1805,6 +1873,7 @@ async def approve_copy(thread_id: str, body: ApprovalRequest):
 
     now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
+        "messages": messages,
         "status": "active",
         "updated_at": now,
     })
@@ -1819,10 +1888,23 @@ async def approve_copy(thread_id: str, body: ApprovalRequest):
 
 @router.post("/chat/threads/{thread_id}/reject", response_model=ThreadActionResponse)
 async def reject_copy(thread_id: str, body: ApprovalRequest):
-    """Save a negative evaluation (thumbs-down) as a retrievable memory."""
+    """Save a negative evaluation (thumbs-down) as a retrievable memory and on the message."""
     thread = _thread_cache_get(thread_id) or _load_thread_record(thread_id, body.user_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
+
+    # Update the message's rating in the thread
+    messages = list(thread.get("messages", []))
+    if body.message_id:
+        for msg in messages:
+            if msg.get("id") == body.message_id:
+                msg["rating"] = "down"
+                break
+    else:
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                msg["rating"] = "down"
+                break
 
     if _memory:
         try:
@@ -1836,9 +1918,9 @@ async def reject_copy(thread_id: str, body: ApprovalRequest):
 
         copy_text = (body.feedback or "").strip()
         if not copy_text:
-            messages = thread.get("messages", [])
-            if messages:
-                last_assistant = [m for m in messages if m.get("role") == "assistant"]
+            messages_list = thread.get("messages", [])
+            if messages_list:
+                last_assistant = [m for m in messages_list if m.get("role") == "assistant"]
                 if last_assistant:
                     copy_text = last_assistant[-1].get("content", "").strip()
 
@@ -1856,6 +1938,7 @@ async def reject_copy(thread_id: str, body: ApprovalRequest):
 
     now = _utc_now_iso()
     cached_thread = _thread_cache_update(thread_id, {
+        "messages": messages,
         "status": "active",
         "updated_at": now,
     })

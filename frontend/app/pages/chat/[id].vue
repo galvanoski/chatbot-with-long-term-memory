@@ -96,7 +96,9 @@ async function sendFeedback(msg: any, rating: 'up' | 'down') {
   }
   chat.setMessageFeedback(msg.id, rating)
   const content = messageText(msg) || assistantResponsePreview.value || ''
-  const ok = rating === 'up' ? await chat.approveCopy(content) : await chat.rejectCopy(content)
+  const ok = rating === 'up'
+    ? await chat.approveCopy(content || undefined, undefined, msg.id)
+    : await chat.rejectCopy(content || 'thumbs_down', msg.id)
   if (ok) {
     toast.add({ title: 'Feedback gespeichert', description: rating === 'up' ? 'Positive Bewertung' : 'Negative Bewertung', duration: 3000 })
   } else {
@@ -193,7 +195,7 @@ function scrollToBottom() {
 }
 
 watch(
-  () => unref(chat.messages).map(m => m.parts?.[0]?.text ?? m.content ?? '').join(''),
+  () => unref(chat.messages).map(m => (m.parts?.[0]?.text ?? m.content ?? '') + (m.image_url || '')).join(''),
   () => nextTick(scrollToBottom)
 )
 
@@ -270,23 +272,17 @@ const debugState = computed(() => JSON.stringify({
             </div>
 
             <div v-else class="chat-assistant-block">
-              <!-- No text yet: show only the loading indicator -->
+              <!-- No text yet: show shimmer loading text -->
               <template v-if="isStreamingPlaceholder(msg)">
                 <div data-testid="chat-processing" class="chat-response-pending">
-                  <div class="chat-thinking-indicator">
-                    <span class="dot" /><span class="dot" /><span class="dot" />
-                  </div>
-                  <p class="chat-processing-text">{{ loadingStatusText }}</p>
+                  <span class="text-shimmer">{{ loadingStatusText }}</span>
                 </div>
               </template>
 
-              <!-- Text is arriving: show loading indicator above the partial text until done -->
+              <!-- Text is arriving: show shimmer above partial text until done -->
               <template v-else-if="isSending && idx === latestAssistantIndex">
                 <div data-testid="chat-processing" class="chat-response-pending mb-2">
-                  <div class="chat-thinking-indicator">
-                    <span class="dot" /><span class="dot" /><span class="dot" />
-                  </div>
-                  <p class="chat-processing-text">{{ loadingStatusText }}</p>
+                  <span class="text-shimmer">{{ loadingStatusText }}</span>
                 </div>
                 <p class="chat-assistant-text">{{ messageText(msg) }}</p>
               </template>
@@ -330,9 +326,20 @@ const debugState = computed(() => JSON.stringify({
                 alt="Generated image"
                 class="mt-3 rounded-lg max-w-full h-auto border border-default/20"
               />
+              <div v-if="msg.image_url" class="flex gap-1 mt-1">
+                <a
+                  :href="msg.image_url"
+                  download
+                  class="chat-action-btn"
+                  aria-label="Download image"
+                  title="Download image"
+                >
+                  <UIcon name="i-lucide-download" class="size-4" />
+                </a>
+              </div>
 
               <div
-                v-if="hasMessageText(msg) && !isTemporaryMessage(msg)"
+                v-if="(hasMessageText(msg) || msg.image_url) && !isTemporaryMessage(msg)"
                 data-testid="approval-panel"
                 class="chat-message-actions"
               >
@@ -405,11 +412,17 @@ const debugState = computed(() => JSON.stringify({
                   </a>
                 </div>
 
-                <div v-if="msg.usage" class="flex items-center gap-3 mt-1 text-[10px] text-muted select-none">
-                  <span>{{ msg.usage.model }}</span>
-                  <span>⬆ {{ msg.usage.input_tokens }}</span>
-                  <span>⬇ {{ msg.usage.output_tokens }}</span>
-                  <span>${{ msg.usage.cost.toFixed(5) }}</span>
+                <div v-if="msg.usage || msg.is_image_prompt || msg.image_url" class="flex items-center gap-3 mt-1 text-[10px] text-muted select-none">
+                  <template v-if="msg.usage">
+                    <span>{{ msg.usage.model }}</span>
+                    <span>⬆ {{ msg.usage.input_tokens }}</span>
+                    <span>⬇ {{ msg.usage.output_tokens }}</span>
+                    <span>${{ msg.usage.cost.toFixed(5) }}</span>
+                  </template>
+                  <template v-else>
+                    <span>openai/gpt-5-mini</span>
+                    <span class="text-muted/50">(usage data pending)</span>
+                  </template>
                 </div>
 
                 <div v-if="msg.seo_metadata" class="w-full mt-2">
@@ -577,6 +590,43 @@ const debugState = computed(() => JSON.stringify({
                       </template>
                     </div>
                   </details>
+                </div>
+
+                <!-- Image prompt suggestion cards -->
+                <div
+                  v-if="msg.is_image_prompt && !isTemporaryMessage(msg)"
+                  class="w-full mt-4 space-y-2"
+                >
+                  <p class="text-xs font-semibold text-muted/60 uppercase tracking-wide">What would you like to do?</p>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      class="prompt-suggestion-card"
+                      @click="chat.generateImage(messageText(msg), msg.id)"
+                    >
+                      <UIcon name="i-lucide-image" class="size-5 text-primary" />
+                      <span class="text-sm font-medium">Generate Image</span>
+                      <span class="text-xs text-muted/70">Create the actual image from this prompt</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="prompt-suggestion-card"
+                      @click="copyDraftToClipboard(messageText(msg))"
+                    >
+                      <UIcon name="i-lucide-copy" class="size-5 text-primary" />
+                      <span class="text-sm font-medium">Copy Prompt</span>
+                      <span class="text-xs text-muted/70">Copy the prompt text to clipboard</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="prompt-suggestion-card"
+                      @click="chat.generateImagePrompt(messageText(msg), true)"
+                    >
+                      <UIcon name="i-lucide-refresh-cw" class="size-5 text-primary" />
+                      <span class="text-sm font-medium">Try Another</span>
+                      <span class="text-xs text-muted/70">Generate a different prompt for the same idea</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
