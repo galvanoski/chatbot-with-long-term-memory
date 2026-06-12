@@ -79,11 +79,17 @@ def _try_image_model(model: str, modalities: list[str], prompt: str, timeout: in
     """Try a single image model and return (data_url, usage) or None."""
     try:
         from openai import OpenAI
-        client = OpenAI(
+        _client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=os.environ["OPENROUTER_API_KEY"],
             timeout=timeout,
         )
+        # Wrap with LangSmith for image generation observability
+        try:
+            from langsmith.wrappers import wrap_openai
+            client = wrap_openai(_client)
+        except ImportError:
+            client = _client
         raw_response = client.chat.completions.with_raw_response.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],

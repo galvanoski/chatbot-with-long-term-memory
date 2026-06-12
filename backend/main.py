@@ -22,7 +22,11 @@ from backend.graph.builder import build_marketing_graph
 from backend.middleware.geekcat import GeekCatMiddleware
 
 # ── Load environment ──
+# Try current dir first, then fall back to project root
 load_dotenv()
+_dotenv_path = Path(__file__).resolve().parents[1] / ".env"
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path, override=True)
 
 # ── Logging ──
 logging.basicConfig(
@@ -30,6 +34,43 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("geekcat")
+
+# ── LangSmith / LLM Observability ──
+# When LANGCHAIN_TRACING_V2=true + LANGSMITH_API_KEY are set in .env,
+# LangChain automatically traces all ChatOpenAI calls to LangSmith.
+# The raw OpenAI client (image generation) is wrapped separately.
+if os.getenv("LANGCHAIN_TRACING_V2") is None:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+if os.getenv("LANGSMITH_PROJECT") is None:
+    os.environ.setdefault("LANGSMITH_PROJECT", "the-geekcat-marketing-agent")
+print("[main.py] Starting LangSmith setup...", flush=True)
+api_key = os.getenv("LANGSMITH_API_KEY")
+print(f"[main.py] LANGSMITH_API_KEY={'*** set ***' if api_key else 'NOT SET'}", flush=True)
+print(f"[main.py] LANGCHAIN_TRACING_V2={os.getenv('LANGCHAIN_TRACING_V2')}", flush=True)
+print(f"[main.py] LANGSMITH_ENDPOINT={os.getenv('LANGSMITH_ENDPOINT')}", flush=True)
+
+if api_key:
+    # LangChain auto-tracing uses LANGCHAIN_* env vars; mirror LANGSMITH_* into them
+    os.environ.setdefault("LANGCHAIN_API_KEY", api_key)
+    os.environ.setdefault("LANGCHAIN_ENDPOINT",
+                          os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"))
+    try:
+        from langsmith import Client as LangSmithClient
+        kwargs = {}
+        if os.getenv("LANGSMITH_ENDPOINT"):
+            kwargs["api_url"] = os.environ["LANGSMITH_ENDPOINT"]
+        ls_client = LangSmithClient(**kwargs)
+        logger.info("LangSmith tracing enabled — project=%s endpoint=%s",
+                     os.environ["LANGSMITH_PROJECT"],
+                     os.environ["LANGCHAIN_ENDPOINT"])
+        print("[main.py] LangSmith tracing ENABLED", flush=True)
+    except Exception as exc:
+        logger.warning("LangSmith API key set but connection failed: %s — tracing disabled", exc)
+        print(f"[main.py] LangSmith connection FAILED: {exc}", flush=True)
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+else:
+    logger.info("LangSmith tracing disabled — set LANGSMITH_API_KEY in .env to enable")
+    print("[main.py] LangSmith tracing DISABLED (no API key)", flush=True)
 
 
 def _check_chroma_store(chroma_store: object) -> bool:
