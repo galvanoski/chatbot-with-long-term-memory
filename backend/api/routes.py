@@ -1461,7 +1461,7 @@ _GEEKCAT_IRRELEVANT_PATTERNS = [
     # Sports
     r"\b(sports|football|soccer|basketball|tennis|fussball|fußball|sport|team|player|trainer|stadium|match|game|league|championship)\b",
     # Finance / Investing
-    r"\b(stock|stock market|crypto|bitcoin|investing|invest|trading|trade|aktien|investieren|finanz|bank|konto|finance|financial|portfolio)\b",
+    r"\b(stock|stock market|investing|invest|trading|trade|aktien|investieren|finanz|bank|konto|finance|financial|portfolio)\b",
     # Politics
     r"\b(politics|political|election|voting|vote|parliament|politik|wahl|regierung|präsident|president|minister|senator|congress|government)\b",
     # Health / Medical
@@ -1636,6 +1636,10 @@ def _has_product_context(thread_dict: dict | None, instruction: str = "") -> boo
     for msg in messages:
         if msg.get("role") == "assistant" and str(msg.get("content") or "").startswith("\U0001f3a8"):
             return True
+
+    # If the instruction itself has meaningful text, let the graph/RAG decide
+    if instruction.strip():
+        return True
 
     return False
 

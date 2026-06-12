@@ -862,7 +862,7 @@ export function useGeekCatChat() {
   }
 
   async function regenerateCopy(instruction?: string): Promise<boolean> {
-    if (!currentThread.value) return false
+    if (!currentThread.value || loading.value) return false
     const previousThreadMessages = [...currentThread.value.messages]
     const previousUiMessages = [...messages.value]
     cancelMessageAnimation()
@@ -870,6 +870,18 @@ export function useGeekCatChat() {
     animationController.value = controller
 
     const assistantStreamId = `temp-regen-${Date.now()}`
+    // Add temp assistant message so streaming text replaces the shimmer
+    messages.value = [
+      ...previousUiMessages,
+      {
+        id: assistantStreamId,
+        role: 'assistant',
+        name: 'The Geek Cat',
+        content: '',
+        created_at: new Date().toISOString(),
+        parts: [{ type: 'text' as const, text: '' }],
+      },
+    ]
     loading.value = true
     error.value = null
     try {
@@ -888,7 +900,14 @@ export function useGeekCatChat() {
         if (controller.signal.aborted) return
 
         if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
-          // Keep the inline loading placeholder visible until the final normalized response arrives.
+          const deltaText = String((payload as { text?: unknown }).text ?? '')
+          if (!deltaText) return
+          messages.value = messages.value.map((message) => {
+            if (message.id !== assistantStreamId) return message
+            const current = message.parts?.[0]?.text ?? message.content ?? ''
+            const next = `${current}${deltaText}`
+            return { ...message, content: next, parts: [{ type: 'text' as const, text: next }] }
+          })
           return
         }
 

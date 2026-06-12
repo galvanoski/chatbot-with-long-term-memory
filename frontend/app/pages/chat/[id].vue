@@ -62,20 +62,43 @@ onMounted(async () => {
 })
 
 async function handleRegenerate(msg: any) {
+  if (regenerateProcessing.value) return  // prevent double-click race
+  const oldMsgId = msg?.id  // save BEFORE removing from UI
   regenerateProcessing.value = true
   try {
+    // Remove old message from UI so it disappears immediately
+    const allMessages = unref(chat.messages)
+    const msgIdx = allMessages.findIndex((m: any) => m.id === oldMsgId)
+    chat.messages.value = allMessages.filter((m: any) => m.id !== oldMsgId)
+
+    // Find the preceding user message for context
+    const prevUserMsg = msgIdx > 0
+      ? allMessages.slice(0, msgIdx).reverse().find((m: any) => m.role === 'user')
+      : null
+    const prevUserText = prevUserMsg ? messageText(prevUserMsg) : ''
+
     if (msg?.seo_metadata) {
-      const allMessages = unref(chat.messages)
-      const idx = allMessages.indexOf(msg)
-      const userMsg = idx >= 0
-        ? allMessages.slice(0, idx).reverse().find((m: any) => m.role === 'user')
-        : null
-      const instruction = userMsg ? messageText(userMsg) : 'Generate SEO for: '
-      await chat.generateSEO(instruction)
+      await chat.generateSEO(prevUserText || 'Generate SEO for: ')
+    } else if (msg?.image_url) {
+      await chat.generateImage(prevUserText, oldMsgId)
+    } else if (msg?.is_image_prompt) {
+      await chat.generateImagePrompt(prevUserText || 'Create a product image prompt')
     } else {
-      const text = typeof msg === 'string' ? msg : messageText(msg)
-      await chat.regenerateCopy(text || assistantResponsePreview.value || undefined)
+      // Use the original user request as instruction, not the old post text
+      const instruction = prevUserText || 'Bitte erstelle eine neue Variante mit anderem Hook und CTA.'
+      await chat.regenerateCopy(instruction)
     }
+
+    // After generation completes, filter old message from thread if backend returned it
+    if (oldMsgId) {
+      const thread = unref(chat.currentThread)
+      if (thread) {
+        thread.messages = thread.messages.filter((m: any) => m.id !== oldMsgId && m._id !== oldMsgId)
+      }
+      chat.messages.value = unref(chat.messages).filter((m: any) => m.id !== oldMsgId && m._id !== oldMsgId)
+    }
+  } catch (err) {
+    console.error('[handleRegenerate] error:', err)
   } finally {
     regenerateProcessing.value = false
   }
@@ -453,18 +476,6 @@ const debugState = computed(() => JSON.stringify({
                     <UIcon name="i-lucide-refresh-cw" class="size-4" :class="regenerateProcessing ? 'animate-spin' : ''" />
                   </button>
                 </UTooltip>
-                <UTooltip text="Bild generieren">
-                  <button
-                    type="button"
-                    class="chat-action-btn"
-                    :disabled="loading || sending"
-                    @click="chat.generateImage(messageText(msg), msg.id)"
-                    aria-label="Bild generieren"
-                  >
-                    <UIcon name="i-lucide-image" class="size-4" />
-                  </button>
-                </UTooltip>
-
                 <div v-if="idx === latestAssistantIndex && pending?.sources?.length" class="chat-inline-sources" data-testid="chat-sources">
                   <a
                     v-for="source in pending.sources"
