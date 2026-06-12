@@ -746,12 +746,20 @@ const debugState = computed(() => JSON.stringify({
               @keydown.enter.exact.prevent="send"
             />
             <UButton
+              v-if="isLoading || isSending"
+              data-testid="chat-stop"
+              icon="i-lucide-square"
+              color="neutral"
+              class="rounded-full"
+              @click="chat.cancelMessageAnimation()"
+            />
+            <UButton
+              v-else
               data-testid="chat-submit"
               icon="i-lucide-arrow-up"
               color="neutral"
               class="rounded-full"
-              :loading="isLoading || isSending"
-              :disabled="isLoading || isSending || !input.trim()"
+              :disabled="!input.trim()"
               @click="handleSendClick"
             />
           </form>

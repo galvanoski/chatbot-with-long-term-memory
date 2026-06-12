@@ -319,7 +319,8 @@ export function useGeekCatChat() {
       const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/messages/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({ message: text }),
+        signal: controller.signal
       })
 
       if (!streamResponse.ok || !streamResponse.body) {
@@ -327,16 +328,11 @@ export function useGeekCatChat() {
       }
 
       await consumeSSEStream(streamResponse.body, async (event, payload) => {
-        if (controller.signal.aborted) {
-          return
-        }
+        if (controller.signal.aborted) return
 
         if (event === 'delta' && typeof payload === 'object' && payload && 'text' in payload) {
           const deltaText = String((payload as { text?: unknown }).text ?? '')
-          if (!deltaText) {
-            return
-          }
-
+          if (!deltaText) return
           messages.value = messages.value.map((message) => {
             if (message.id !== assistantStreamId) return message
             const current = message.parts?.[0]?.text ?? message.content ?? ''
@@ -386,6 +382,11 @@ export function useGeekCatChat() {
 
       return true
     } catch (errorValue: unknown) {
+      if (errorValue instanceof DOMException && errorValue.name === 'AbortError') {
+        currentThread.value.messages = previousThreadMessages
+        messages.value = previousUiMessages
+        return false
+      }
       currentThread.value.messages = previousThreadMessages
       messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to send message'
@@ -508,7 +509,8 @@ export function useGeekCatChat() {
       const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/image-prompt/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction, silent })
+        body: JSON.stringify({ instruction, silent }),
+        signal: controller.signal
       })
 
       if (!streamResponse.ok || !streamResponse.body) {
@@ -556,6 +558,10 @@ export function useGeekCatChat() {
 
       return true
     } catch (errorValue: unknown) {
+      if (errorValue instanceof DOMException && errorValue.name === 'AbortError') {
+        messages.value = previousUiMessages
+        return false
+      }
       messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate image prompt'
       return false
@@ -600,7 +606,8 @@ export function useGeekCatChat() {
       const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/seo/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction })
+        body: JSON.stringify({ instruction }),
+        signal: controller.signal
       })
 
       if (!streamResponse.ok || !streamResponse.body) {
@@ -646,6 +653,10 @@ export function useGeekCatChat() {
 
       return true
     } catch (errorValue: unknown) {
+      if (errorValue instanceof DOMException && errorValue.name === 'AbortError') {
+        messages.value = previousUiMessages
+        return false
+      }
       messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate SEO'
       return false
@@ -694,7 +705,8 @@ export function useGeekCatChat() {
       const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/social-post/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction, product_type: productType || null })
+        body: JSON.stringify({ instruction, product_type: productType || null }),
+        signal: controller.signal
       })
 
       if (!streamResponse.ok || !streamResponse.body) {
@@ -740,6 +752,10 @@ export function useGeekCatChat() {
 
       return true
     } catch (errorValue: unknown) {
+      if (errorValue instanceof DOMException && errorValue.name === 'AbortError') {
+        messages.value = previousUiMessages
+        return false
+      }
       messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate social post'
       return false
@@ -788,7 +804,8 @@ export function useGeekCatChat() {
       const streamResponse = await fetch(`/api/threads/${currentThread.value.id}/image/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, source_message_id: sourceMessageId })
+        body: JSON.stringify({ prompt, source_message_id: sourceMessageId }),
+        signal: controller.signal
       })
 
       if (!streamResponse.ok || !streamResponse.body) {
@@ -850,6 +867,10 @@ export function useGeekCatChat() {
 
       return true
     } catch (errorValue: unknown) {
+      if (errorValue instanceof DOMException && errorValue.name === 'AbortError') {
+        messages.value = previousUiMessages
+        return false
+      }
       messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to generate image'
       return false
@@ -937,6 +958,11 @@ export function useGeekCatChat() {
 
       return true
     } catch (errorValue: unknown) {
+      if (errorValue instanceof DOMException && errorValue.name === 'AbortError') {
+        currentThread.value.messages = previousThreadMessages
+        messages.value = previousUiMessages
+        return false
+      }
       currentThread.value.messages = previousThreadMessages
       messages.value = previousUiMessages
       error.value = errorValue instanceof Error ? errorValue.message : 'Failed to regenerate'
